@@ -1,0 +1,8 @@
+{
+  "resource_root": null,
+  "groupshare_root": null,
+  "bert_root": null,
+  "cache_root": null,
+  "output_root": "outputs",
+  "prefix_map": {}
+}

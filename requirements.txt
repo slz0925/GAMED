@@ -1,0 +1,14 @@
+# Recorded GAMED dependency versions; not a fully resolved environment lock.
+# See docs/ENVIRONMENT.md for platform and test coverage.
+torch==2.2.2
+torchvision==0.17.2
+numpy==1.26.4
+transformers==4.39.3
+timm==0.9.16
+positional-encodings==6.0.3
+pytorch-warmup==0.1.1
+opencv-python==4.9.0.80
+Pillow==10.3.0
+pandas==2.2.1
+openpyxl==3.1.2
+tqdm==4.66.2

@@ -1,0 +1,44 @@
+{
+  "functions": {
+    "to_var": "6307596eb044aff35ce0dbd784a57de4b6b05c0cfb90a0b8d8bcd7cd11e88403",
+    "to_np": "2a2f016f157044b5ececeb90b7ddcaafc17199d0467e0e609e82e2f381fbf38c",
+    "collate_fn_english_fakeddit": "2107f185e0bbef254367c92e731adc0f263d453b5157b7ec4ecc4701d1cf46d9",
+    "get_parameter_number": "4ad88ba5cdeb96fdcf1f3e949bac89438a6d92ea61323bfe9802edf07ca6743d",
+    "load_model": "bb8c8e2200ea62c3cef9cde87f3ff2bc4e2a63add4fb9b24f736ae528b489078",
+    "evaluate": "051829de6a52582b7df0aa4ca3ad5da63840c77ea4d2947f10223c4adb02d6dc"
+  },
+  "main_blocks": {
+    "seed_and_backend": "55aaf6008dc8c19992a22b8da11312ef96909857aed28b94daf5a6b1128948c3",
+    "loss_optimisers_schedulers": "b484f6b78576614ea8f0ba532d1436ee53317f195fdc1cc73b517a2cf5c1ef4a",
+    "training": "6456bee7e8adf8afae5e3f38984f895236412ce868668ded0d1a1319cd5045a5",
+    "validation_and_save": "6a0ab1c2b78cb98405159f75c521c53ad0cf3c6ad7f6bb8f6e0846af6d860078",
+    "loader:setting['train_dataname'] == 'fakeddit'": "004c592ce407f803dd4e7172f4f2d819c1f6f6754069cf5c90194129565234a7",
+    "loader:setting['val_dataname'] == 'fakeddit'": "de3e1bb230e54365db1e08727bbf82e4041a847de385c5ff0e92c3988536363b",
+    "loader:setting['train_dataname'] == 'yang'": "7f758388437d0d938841d632250bab5fa3d04a1dc21788f8424efa3821518875",
+    "loader:setting['val_dataname'] == 'yang'": "aafecc6a346549ca0e1009a4e2b35d82b9225802036e3f5d276a8c2ef4a6081e"
+  },
+  "model_classes": {
+    "gamed": {
+      "AdaIN": "89a4487b1b50b243883f176a93e160bddd720c407c77423cf5dee1a23b8bbb7a",
+      "SimpleGate": "90fd8037d4756704d97f8263b2ef003f6f2aca79c3829f0f3fc8a4e62fadf2a3",
+      "TokenAttention": "da205e142838a34f46188f8d472f1658acef9e6c33fbea5396132a445303c6f9",
+      "MODEL": "736a72460e5e25a132c7ef33b3e7131a5cc89d3b6d00393230232b28bb74b319"
+    },
+    "gamed_without_veto": {
+      "AdaIN": "89a4487b1b50b243883f176a93e160bddd720c407c77423cf5dee1a23b8bbb7a",
+      "SimpleGate": "90fd8037d4756704d97f8263b2ef003f6f2aca79c3829f0f3fc8a4e62fadf2a3",
+      "TokenAttention": "da205e142838a34f46188f8d472f1658acef9e6c33fbea5396132a445303c6f9",
+      "MODEL": "12189b5d335bc492a53ea02b9a420390634066adf39e7a99c2ec7c631a222003"
+    }
+  },
+  "datasets": {
+    "data/Fakeddit_dataset.py": "8e59f5da28c80edda6c81271db016b7e612220605d40cd66bed0a49697a07cdb",
+    "data/Yang_dataset.py": "582ef178b0fe3f80e5965425bf2df1d3d45f1cfa081b3fc3e516c7ec5fd0b24d"
+  },
+  "unchanged_files": {
+    "models_mae.py": "6267e4a6943b9c7fa7b87d107f31a66441348e53b9909fae092ab6ae7dfdc6d0",
+    "util/pos_embed.py": "1670a700318bbece960a37a50d50f6dc01ae47cd5919f11319bfdde4c8f87ab7",
+    "CNN_architectures/pytorch_InceptionResNetV2.py": "6926b2181c38fbb36bad5b81c4d30ee8f97bb0d71997b513f1109ac85e4ff6ac",
+    "models/checkpoint_compat.py": "e7bb4d6bc443f32c1face20a9909a2eebb16818c439663238b3f70d33ecbbc3b"
+  }
+}
