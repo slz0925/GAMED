@@ -1,5 +1,5 @@
 
-from resource_paths import resolve_read_path as _fnd_read_path
+from resource_paths import resolve_read_path as _read_path
 import cv2
 
 import torch
@@ -31,7 +31,7 @@ class Fakeddit_dataset(data.Dataset):
         self.image_size = image_size
         self.image_path = self.root_path+'/Fakeddit/images/images'
         print(self.image_path)
-        list_dirs = os.listdir(_fnd_read_path(self.image_path))
+        list_dirs = os.listdir(_read_path(self.image_path))
         self.image_listdir = {}
         for list_dir in list_dirs:
             idx = list_dir.rfind('.')
@@ -39,7 +39,7 @@ class Fakeddit_dataset(data.Dataset):
 
         train_path = root_path + '/Fakeddit/multimodal_' + mode +"_cleaned"+'.tsv'
         test_path = root_path+"/Fakeddit/multimodal_validate_cleaned.tsv"
-        df = pd.read_csv(_fnd_read_path(train_path), sep="\t")
+        df = pd.read_csv(_read_path(train_path), sep="\t")
         df = df.replace(np.nan, '', regex=True)
         df.fillna('', inplace=True)
         
@@ -140,7 +140,4 @@ class Fakeddit_dataset(data.Dataset):
         img_t = F.to_tensor(img).float()
         return img_t
 
-if __name__ == "main":
-    train_dataset = Fakeddit_dataset(root_path="../dataset")
-    print(train_dataset)
 

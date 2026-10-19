@@ -8,7 +8,7 @@ import sys
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from resource_paths import settings, _root
+from resource_paths import settings
 
 ENTRIES=('run_gamed.py',)
 
@@ -24,11 +24,6 @@ def execute_plan(plan):
     os.chdir(ROOT)
     entry=ROOT/plan['implementation_entry']
     sys.path.insert(0,str(ROOT))
-    output=settings().get('output_root')
-    if output:
-        for dataset in ('fakeddit','yang'):
-            (_root(output)/'checkpoints'/dataset).mkdir(parents=True,exist_ok=True)
-            (_root(output)/'examples'/dataset).mkdir(parents=True,exist_ok=True)
     sys.argv=[str(entry),*plan['argv'][1:]]
     runpy.run_path(str(entry),run_name='__main__')
 

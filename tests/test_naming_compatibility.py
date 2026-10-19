@@ -190,7 +190,7 @@ class CheckpointTensorTests(unittest.TestCase):
         import run_gamed
         model = fixture('gamed'); source = fixture('gamed')
         with patch.object(run_gamed, 'torch', create=True) as mocked, \
-             patch.object(run_gamed, '_fnd_read_path', lambda p: p, create=True):
+             patch.object(run_gamed, '_read_path', lambda p: p, create=True):
             mocked.load.return_value = old_state(source, 'module.')
             run_gamed.load_model(model, 'not-read.pkl')
             mocked.load.assert_called_once_with('not-read.pkl')

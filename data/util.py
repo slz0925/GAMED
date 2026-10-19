@@ -1,5 +1,5 @@
 """Image reading and channel conversion used by GAMED datasets."""
-from resource_paths import resolve_read_path as _fnd_read_path
+from resource_paths import resolve_read_path as _read_path
 import os
 import pickle
 import numpy as np
@@ -15,7 +15,7 @@ def is_image_file(filename):
 
 def _get_paths_from_images(path):
     '''get image path list from image folder'''
-    path = _fnd_read_path(path)
+    path = _read_path(path)
     assert os.path.isdir(path), '{:s} is not a valid directory'.format(path)
     images = []
     for dirpath, _, fnames in sorted(os.walk(path)):
@@ -29,7 +29,7 @@ def _get_paths_from_images(path):
 
 def _get_paths_from_lmdb(dataroot):
     '''get image path list from lmdb meta info'''
-    meta_info = pickle.load(open(_fnd_read_path(os.path.join(dataroot, 'meta_info.pkl')), 'rb'))
+    meta_info = pickle.load(open(_read_path(os.path.join(dataroot, 'meta_info.pkl')), 'rb'))
     paths = meta_info['keys']
     sizes = meta_info['resolution']
     if len(sizes) == 1:
@@ -65,7 +65,7 @@ def _read_img_lmdb(env, key, size):
 def read_img(path, mode=cv2.IMREAD_COLOR):
     """Load an image via PIL as float32 HWC, dividing values by 255 (8-bit: [0, 1])."""
 
-    img = np.array(Image.open(_fnd_read_path(path)))
+    img = np.array(Image.open(_read_path(path)))
     img = img.astype(np.float32) / 255.
     if img.ndim == 2:
         img = np.expand_dims(img, axis=2)

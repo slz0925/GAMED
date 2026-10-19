@@ -16,6 +16,7 @@ from unittest.mock import patch
 import zlib
 
 import test_release_tools as release_tests
+from output_paths import create_run_directory
 
 ROOT, paths = release_tests.ROOT, release_tests.paths
 
@@ -67,16 +68,18 @@ class IORegressionTests(unittest.TestCase):
             self.assertIs(value, state)
             Path(destination).write_bytes(b'stub-state-dict')
             writes.append(Path(destination))
+        run_directory = create_run_directory(output, 'yang', 'yang', 'gamed')
+        self.assertEqual(run_directory.parent, Path(output).resolve()/'train_yang__val_yang'/'gamed')
         execute(checkpoint_block(filename), {
-            'os': os, '_fnd_read_path': paths.resolve_read_path,
-            'args': SimpleNamespace(output_file=str(output)),
+            'os': os, '_read_path': paths.resolve_read_path,
+            'args': SimpleNamespace(output_file=str(output)), 'run_directory': run_directory,
             'setting': {'train_dataname': 'yang'}, 'epoch': 0,
             'datetime': datetime, 'best_validate_acc': 0.5,
             'model': SimpleNamespace(state_dict=lambda: state),
             'torch': SimpleNamespace(save=save),
         })
         self.assertEqual(len(writes), 1)
-        self.assertEqual(writes[0].parent, Path(output)/'yang')
+        self.assertEqual(writes[0], run_directory/'checkpoints'/'epoch_001.pkl')
         self.assertTrue(writes[0].is_file())
 
     def test_external_checkpoint_directory_does_not_hide_missing_local_directory(self):
@@ -96,7 +99,7 @@ class IORegressionTests(unittest.TestCase):
                         (archive/output).mkdir(parents=True)
                         self.assertFalse(Path(output).exists())
                         self.save_checkpoint(filename, output)
-                        self.assertFalse((archive/output/'yang').exists())
+                        self.assertFalse((archive/output/'train_yang__val_yang').exists())
         finally:
             os.chdir(previous)
 
@@ -124,7 +127,7 @@ class IORegressionTests(unittest.TestCase):
         names = {'is_image_file', '_get_paths_from_images', 'get_image_paths'}
         if include_reader:
             names.add('read_img')
-        namespace = {'os':os, '_fnd_read_path':paths.resolve_read_path,
+        namespace = {'os':os, '_read_path':paths.resolve_read_path,
                      'IMG_EXTENSIONS':['.jpg', '.JPG', '.jpeg', '.JPEG', '.png', '.PNG', '.ppm', '.PPM', '.bmp', '.BMP', '.tiff', '.tif']}
         if include_reader:
             import numpy as np
@@ -176,7 +179,7 @@ class IORegressionTests(unittest.TestCase):
     def pixel_functions(self):
         import numpy as np
         from PIL import Image
-        namespace = {'np': np, 'Image': Image, '_fnd_read_path': paths.resolve_read_path,
+        namespace = {'np': np, 'Image': Image, '_read_path': paths.resolve_read_path,
                      'cv2': SimpleNamespace(IMREAD_COLOR=1)}
         names = {'read_img', 'channel_convert', 'bgr2ycbcr'}
         execute([node for node in tree('data/util.py').body

@@ -13,7 +13,7 @@ import unittest
 import test_computation_contracts as contracts
 
 ROOT = contracts.ROOT
-EXPECTED_COMPUTATION_FIXTURE_SHA256 = '2151cd0698fca61f3c322c651e51ff33de9b65726bfcd9ce250b282e8d3fe95e'
+EXPECTED_COMPUTATION_FIXTURE_SHA256 = '0a1504005fd2c82640d5af6681ca6ecc013985ab06b8e0ea1cdbdc75e33bc0dc'
 
 
 def marker(name):
@@ -50,7 +50,7 @@ def runtime_envelope(tree, source, expected_contract):
         main = contracts.getfn(tree, 'main')
         blocks = expected_contract['main_blocks']
         # Verify nested regions before replacing the two outer list slices.
-        loop = main.body[71]
+        loop = main.body[72]
         loop.body[2] = checked_fragment(loop.body[2], blocks['training'], 'training')
         loop.body[3].body = checked_body(
             loop.body[3].body, blocks['validation_and_save'], 'validation_and_save')

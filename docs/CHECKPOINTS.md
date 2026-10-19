@@ -29,7 +29,12 @@ tokenizer_config.json
 special_tokens_map.json
 ```
 
-`AutoModel` and `AutoTokenizer` read that directory. If using a Hugging Face cache,
+`AutoModel` and `AutoTokenizer` use the same directory resolver. Explicit
+`prefix_map` entries take precedence over `resource_root`; if both legacy and
+repository-relative entries match, the legacy mapping is used. Without a mapping,
+the repository-relative
+directory is used, with an existing legacy installation as a fallback.
+If using a Hugging Face cache,
 copy the complete snapshot contents into this location, including the actual
 weight file; a cache container containing only `blobs/`, `refs/` and `snapshots/`
 is not the expected layout. Chinese ERNIE1 is not required.
@@ -43,8 +48,10 @@ applicable component licences when obtaining or redistributing weights.
 MAE and ERNIE weights initialise components; they are not a trained GAMED model.
 This release does not provide a download for trained GAMED weights. Use a state
 dict from your selected model variant and pass its path with `-checkpoint`.
-The Fakeddit validation script requires this argument and checks the mapped file
-exists. The Python entry retains its optional checkpoint interface.
+Both [validation scripts](../scripts/README.md), `validate_yang.sh` and
+`validate_fakeddit.sh`, require this argument and check that the mapped file exists
+before model initialisation. `--help` needs no checkpoint. The Python entry retains
+its optional checkpoint interface.
 
 Model construction still loads MAE and English ERNIE before the GAMED state dict.
 The IP branch constructs IRNv2 without separately loading ImageNet weights;
@@ -59,6 +66,9 @@ unexpected keys, conflicting aliases and shape mismatches raise an error.
 Explicit `strict=False` permits partial loading with a warning listing missing
 and unexpected keys; collisions and shape mismatches still fail. New saves use
 the current names. No manual checkpoint conversion is required.
-This repository saves state dicts,
-not whole-model Python pickle objects. See [REPRODUCE.md](REPRODUCE.md) for output
-paths and validation behaviour.
+This repository saves state dicts, not whole-model Python pickle objects.
+New checkpoints are written to the current run's `checkpoints/epoch_<number>.pkl`;
+the parent directories identify both datasets, the model and the run. Loading uses
+the supplied path and state-dict keys, not the checkpoint filename. Existing
+checkpoint filenames remain valid. See [REPRODUCE.md](REPRODUCE.md) for the output
+layout and validation behaviour.

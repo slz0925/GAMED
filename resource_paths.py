@@ -14,12 +14,14 @@ _ROOT_PREFIXES = (
     '/ssd/yyh/tmp/fnd-bootstrap-master',
     '/data/yyh/tmp/fnd-bootstrap-master',
 )
-_ENV_KEYS = {
-    'resource_root': 'FND_RESOURCE_ROOT', 'groupshare_root': 'FND_GROUPSHARE_ROOT',
-    'bert_root': 'FND_BERT_ROOT', 'cache_root': 'FND_CACHE_ROOT',
-    'output_root': 'FND_OUTPUT_ROOT',
+_GAMED_ENV_KEYS = {
+    'resource_root': 'GAMED_RESOURCE_ROOT', 'groupshare_root': 'GAMED_GROUPSHARE_ROOT',
+    'bert_root': 'GAMED_BERT_ROOT', 'cache_root': 'GAMED_CACHE_ROOT',
+    'output_root': 'GAMED_OUTPUT_ROOT',
 }
-_GAMED_ENV_KEYS = {key: name.replace('FND_', 'GAMED_', 1) for key, name in _ENV_KEYS.items()}
+# Accept existing configurations; GAMED names take precedence.
+_ENV_KEYS = {key: name.replace('GAMED_', 'FND_', 1) for key, name in _GAMED_ENV_KEYS.items()}
+ENGLISH_ENCODER_PATH = 'ernie/models--nghuyong--ernie-2.0-base-en'
 
 
 @lru_cache(maxsize=8)
@@ -148,3 +150,29 @@ def resolve_write_path(value):
             return mapped
     return value
 
+
+def resolve_english_encoder_path():
+    """Locate the English model/tokenizer directory without creating resources.
+
+    Explicit prefix mappings precede resource_root, with legacy mappings first
+    when both legacy and repository-relative mappings match.
+    An existing legacy installation is a fallback when no local directory exists.
+    """
+    legacy = _ROOT_PREFIXES[0] + '/' + ENGLISH_ENCODER_PATH
+    prefixes = sorted(settings().get('prefix_map', {}).items(),
+                      key=lambda item: len(item[0]), reverse=True)
+    for path in (legacy, ENGLISH_ENCODER_PATH):
+        for prefix, destination in prefixes:
+            if destination:
+                mapped = _mapped(path, prefix, destination)
+                if mapped is not None:
+                    return mapped
+    mapped = resolve_read_path(legacy)
+    if mapped != legacy:
+        return mapped
+    mapped = resolve_read_path(ENGLISH_ENCODER_PATH)
+    if mapped != ENGLISH_ENCODER_PATH:
+        return mapped
+    if not (PROJECT_ROOT / ENGLISH_ENCODER_PATH).is_dir() and Path(legacy).is_dir():
+        return legacy
+    return ENGLISH_ENCODER_PATH

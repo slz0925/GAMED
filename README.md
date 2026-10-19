@@ -30,7 +30,8 @@ scripts/                      Launcher and experiment commands
 docs/, resources/             Method, environment, data and checkpoint metadata
 tests/, tools/                Regression tests and publication checks
 third_party/licenses/         Component licence texts
-checkpoint/, outputs/         Local outputs, excluded from Git
+checkpoint/                   Initialisation weights and default run outputs
+outputs/                      Optional run output root; payloads excluded from Git
 ```
 
 ## Installation
@@ -64,21 +65,26 @@ Select a model and both datasets explicitly. Preview the Yang training command:
 python scripts/run.py --dry-run run_gamed.py -network_arch gamed -train_dataset yang -test_dataset yang -val 0
 ```
 
-Start Yang training, or view the options for Fakeddit validation:
+Use the dataset-specific training and validation scripts:
 
 ```bash
-bash scripts/train_yang.sh
-bash scripts/validate_fakeddit.sh --help
+bash scripts/train_yang.sh -output_file outputs
+bash scripts/train_fakeddit.sh -output_file outputs
+bash scripts/validate_yang.sh -checkpoint /path/to/yang_checkpoint.pkl -output_file outputs
+bash scripts/validate_fakeddit.sh -checkpoint /path/to/fakeddit_checkpoint.pkl -output_file outputs
 ```
 
-The validation script requires `-checkpoint` pointing to your trained GAMED state
-dict. Both scripts accept optional entry arguments; see [scripts/README.md](scripts/README.md).
-Use the direct entry to choose another dataset or the `gamed_without_veto` model.
+Replace the `/path/to/...` placeholders with existing trained GAMED state-dict
+files; trained weights are not included. Both validation scripts require
+`-checkpoint`; `--help` needs no checkpoint. All four scripts accept optional entry arguments;
+see [scripts/README.md](scripts/README.md). Use the direct entry to choose the
+`gamed_without_veto` model or different training and validation datasets.
 
 Direct execution is also supported:
 
 ```bash
 python run_gamed.py -network_arch gamed -train_dataset yang -test_dataset yang -val 0
+python run_gamed.py -network_arch gamed_without_veto -train_dataset fakeddit -test_dataset fakeddit -val 0 -output_file outputs
 python run_gamed.py --help
 ```
 
@@ -86,6 +92,8 @@ The entry sets the repository as the working directory. Launcher options
 `--config` and `--dry-run` precede `run_gamed.py`. Validation uses both data loaders,
 exports features/results and saves a state dict; see
 [REPRODUCE.md](docs/REPRODUCE.md) for parameters, metrics and output locations.
+`-output_file` controls all outputs. Each invocation creates an independent run
+directory containing per-epoch checkpoints, feature files and `predictions.xlsx`.
 
 ## Tests
 

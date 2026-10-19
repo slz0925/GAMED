@@ -1,6 +1,6 @@
 """GAMED research implementation; see docs/THIRD_PARTY.md for provenance."""
 from models.checkpoint_compat import prepare_state_dict
-from resource_paths import resolve_read_path as _fnd_read_path
+from resource_paths import resolve_read_path as _read_path, resolve_english_encoder_path
 from positional_encodings.torch_encodings import PositionalEncoding1D
 import torch
 import torch.nn as nn
@@ -77,15 +77,15 @@ class GAMED(nn.Module):
         self.depth = 1
         super(GAMED, self).__init__()
         self.image_encoder = models_mae.__dict__["mae_vit_{}_patch16".format(self.model_size)](norm_pix_loss=False)
-        checkpoint = torch.load(_fnd_read_path('checkpoint/mae_pretrain_vit_{}.pth'.format(self.model_size)), map_location='cpu')
+        checkpoint = torch.load(_read_path('checkpoint/mae_pretrain_vit_{}.pth'.format(self.model_size)), map_location='cpu')
         self.image_encoder.load_state_dict(checkpoint['model'], strict=False)
 
 
 
         english_lists = ['gossip', 'Twitter', 'politi']
-        model_name = '/root/autodl-tmp/ssd/yyh/tmp/fnd-bootstrap-master/ernie/models--nghuyong--ernie-2.0-base-en'
+        model_name = resolve_english_encoder_path()
         print("Text encoder: ERNIE 2.0 Base (English)")
-        self.text_encoder = AutoModel.from_pretrained(_fnd_read_path(model_name))
+        self.text_encoder = AutoModel.from_pretrained(model_name)
 
         self.t_attention = TokenAttention(self.unified_dim)
 

@@ -4,6 +4,7 @@ import datetime
 import os
 from pathlib import Path
 import sys
+from output_paths import create_run_directory, create_epoch_directory
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 GT_size = 224
@@ -16,16 +17,16 @@ def build_parser():
     parser.add_argument('-network_arch', required=True, choices=('gamed', 'gamed_without_veto'))
     parser.add_argument('-train_dataset', required=True, choices=('fakeddit', 'yang'))
     parser.add_argument('-test_dataset', required=True, choices=('fakeddit', 'yang'))
-    parser.add_argument('-output_file', default='checkpoint/')
+    parser.add_argument('-output_file', default='checkpoint/', help='Root directory for checkpoints, features and predictions')
     parser.add_argument('-checkpoint', default='')
     parser.add_argument('-finetune', type=int, default=0)
     parser.add_argument('-val', type=int, default=0)
-    parser.add_argument('-is_filter', type=int, default=0)
-    parser.add_argument('-duplicate_fake_times', type=int, default=0)
-    parser.add_argument('-is_sample_positive', type=float, default=1.0)
+    parser.add_argument('-is_filter', type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument('-duplicate_fake_times', type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument('-is_sample_positive', type=float, default=1.0, help=argparse.SUPPRESS)
     parser.add_argument('-batch_size', type=int, default=16)
     parser.add_argument('-epochs', type=int, default=100)
-    parser.add_argument('-not_on_12', type=int, default=0)
+    parser.add_argument('-not_on_12', type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument('-device', type=int, default=0, help='CUDA device index')
     return parser
 
@@ -41,9 +42,9 @@ def initialise_runtime():
     Importing this entry, requesting help or rejecting invalid CLI values does
     not load frameworks, tokenizers, data or weights.
     """
-    global _fnd_read_path, np, torch, nn, Variable, DataLoader, warmup
+    global _read_path, np, torch, nn, Variable, DataLoader, warmup
     global AutoTokenizer, ImageFile, token_uncased_fakeddit, Progbar
-    from resource_paths import resolve_read_path as _fnd_read_path
+    from resource_paths import resolve_read_path as _read_path, resolve_english_encoder_path
     import numpy as np
     import torch
     import torch.nn as nn
@@ -56,7 +57,7 @@ def initialise_runtime():
     import pytorch_warmup as warmup
     from PIL import ImageFile
     ImageFile.LOAD_TRUNCATED_IMAGES = True
-    token_uncased_fakeddit = AutoTokenizer.from_pretrained(_fnd_read_path("/root/autodl-tmp/ssd/yyh/tmp/fnd-bootstrap-master/ernie/models--nghuyong--ernie-2.0-base-en"))
+    token_uncased_fakeddit = AutoTokenizer.from_pretrained(resolve_english_encoder_path())
     from utils import Progbar
 
 
@@ -289,6 +290,8 @@ def main(args):
     if setting['val']!=0:
         custom_num_epochs = 1
 
+    run_directory = create_run_directory(args.output_file, args.train_dataset, args.test_dataset, args.network_arch, validation=args.val != 0)
+
     for epoch in range(custom_num_epochs):
         cost_vector = []
         acc_vector = []
@@ -417,7 +420,7 @@ def main(args):
             progbar = Progbar(total, width=10, stateful_metrics=stateful_metrics)
             model.eval()
             print("Starting validation")
-            validate_acc_list, validate_real_items, validate_fake_items, val_loss, single_items = evaluate(validate_loader, model, criterion, progbar=progbar, setting=setting)
+            validate_acc_list, validate_real_items, validate_fake_items, val_loss, single_items = evaluate(validate_loader, model, criterion, progbar=progbar, setting=setting, output_directory=create_epoch_directory(run_directory, epoch + 1))
 
             validate_acc = max(validate_acc_list)
             print("validate_acc_list:",validate_acc_list)
@@ -450,19 +453,18 @@ def main(args):
             print("Validation completed")
             if True:
                 best_validate_acc = validate_acc
-                os.makedirs(os.path.join(args.output_file, setting['train_dataname']), exist_ok=True)
-                best_validate_dir = "{}/{}/yang_resv2_veto1_{}_{}{}_{}.pkl".format(args.output_file,setting['train_dataname'],str(epoch + 1),str(datetime.datetime.now().month),str(datetime.datetime.now().day),
-                                                                  int(best_validate_acc*100))
+                os.makedirs(run_directory / 'checkpoints', exist_ok=True)
+                best_validate_dir = run_directory / 'checkpoints' / f'epoch_{epoch + 1:03d}.pkl'
                 torch.save(model.state_dict(), best_validate_dir)
                 print("Model saved at {}".format(best_validate_dir))
 
 from collections import OrderedDict
 def load_model(model, load_path, strict=True):
-    load_net = torch.load(_fnd_read_path(load_path))
+    load_net = torch.load(_read_path(load_path))
     return model.load_state_dict(load_net, strict=strict)
 
 
-def evaluate(validate_loader, model, criterion, progbar=None, setting={}):
+def evaluate(validate_loader, model, criterion, progbar=None, setting={}, *, output_directory):
     model.eval()
     validate_acc_vector_temp, validate_precision_vector_temp, validate_recall_vector_temp, validate_F1_vector_temp  = [], [], [], []
     val_loss = 0
@@ -606,16 +608,16 @@ def evaluate(validate_loader, model, criterion, progbar=None, setting={}):
     t_feature_array = np.array(export_t_features)
     ip_feature_array = np.array(export_ip_features)
     mm_feature_array = np.array(export_mm_features)
-    np.savetxt('npresultf.txt',mix_feature_array)
-    np.savetxt('npresulti.txt',is_feature_array)
-    np.savetxt('npresultt.txt',t_feature_array)
-    np.savetxt('npresultv.txt',ip_feature_array)
-    np.savetxt('npresultm.txt',mm_feature_array)
+    np.savetxt(Path(output_directory) / 'mix_features.txt',mix_feature_array)
+    np.savetxt(Path(output_directory) / 'is_features.txt',is_feature_array)
+    np.savetxt(Path(output_directory) / 't_features.txt',t_feature_array)
+    np.savetxt(Path(output_directory) / 'ip_features.txt',ip_feature_array)
+    np.savetxt(Path(output_directory) / 'mm_aux_features.txt',mm_feature_array)
 
 
     import pandas as pd
     df = pd.DataFrame(results)
-    pandas_file = f'checkpoint/{dataset_name}_experiment.xlsx'
+    pandas_file = Path(output_directory) / 'predictions.xlsx'
     df.to_excel(pandas_file)
     print(f"Excel saved to {pandas_file}")
 

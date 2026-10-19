@@ -4,8 +4,6 @@ LICENSE
 PUBLISH_FILES.txt
 README.md
 checkpoint/README.md
-checkpoint/fakeddit/.gitkeep
-checkpoint/yang/.gitkeep
 config/paths.example.json
 data/Fakeddit_dataset.py
 data/Yang_dataset.py
@@ -21,6 +19,7 @@ models/checkpoint_compat.py
 models/gamed.py
 models/gamed_without_veto.py
 models_mae.py
+output_paths.py
 outputs/.gitkeep
 requirements.txt
 resource_paths.py
@@ -28,13 +27,16 @@ resources/manifest.json
 run_gamed.py
 scripts/README.md
 scripts/run.py
+scripts/train_fakeddit.sh
 scripts/train_yang.sh
 scripts/validate_fakeddit.sh
+scripts/validate_yang.sh
 tests/behaviour_contract.json
 tests/runtime_boundaries.json
 tests/test_computation_contracts.py
 tests/test_io_regressions.py
 tests/test_naming_compatibility.py
+tests/test_output_paths.py
 tests/test_public_names.py
 tests/test_release_tools.py
 tests/test_runtime_boundaries.py

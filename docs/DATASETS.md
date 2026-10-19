@@ -24,15 +24,18 @@ configured roots are based on this repository. Explicit `prefix_map` values use
 longest matching path prefixes.
 
 Use `GAMED_CONFIG` to select a configuration file, or the launcher's `--config`.
-`GAMED_RESOURCE_ROOT`, `GAMED_OUTPUT_ROOT`, `GAMED_GROUPSHARE_ROOT`,
-`GAMED_BERT_ROOT` and `GAMED_CACHE_ROOT` override the corresponding JSON fields.
-The `FND_*` aliases are also accepted; `GAMED_*` takes precedence.
+`GAMED_RESOURCE_ROOT` overrides the JSON resource root. The example includes only
+`resource_root` and `prefix_map`; no output configuration is needed.
+Existing `groupshare_root`, `bert_root`, `cache_root` and `output_root` mappings
+and their `GAMED_*` environment overrides remain supported. The `FND_*` aliases
+are also accepted; `GAMED_*` takes precedence.
 
 `resource_root` maps relative dataset/checkpoint/ERNIE reads and recognised
 configured absolute resource paths. Existing local checkpoint files take
-precedence over external resources. `output_root` maps supported result destinations;
-it does not override `-output_file` or all export filenames. Read routing does
-not write or extract resources. See [REPRODUCE.md](REPRODUCE.md) for outputs.
+precedence over external resources. `output_root` maps destinations explicitly
+passed to the write-path resolver; the training entry instead uses `-output_file`
+for all run outputs. The launcher does not create directories from `output_root`.
+Read routing does not write or extract resources. See [REPRODUCE.md](REPRODUCE.md) for outputs.
 
 ## Loading rules
 

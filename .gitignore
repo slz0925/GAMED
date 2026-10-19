@@ -41,6 +41,7 @@ Thumbs.db
 *.xlsx
 
 # Generated evaluation and training files, including root-level exports
+train_*__val_*/
 *.out
 *.log
 /npresult*.txt
@@ -52,10 +53,6 @@ Thumbs.db
 !/outputs/.gitkeep
 /checkpoint/**
 !/checkpoint/README.md
-!/checkpoint/fakeddit/
-!/checkpoint/fakeddit/.gitkeep
-!/checkpoint/yang/
-!/checkpoint/yang/.gitkeep
 
 # Non-versioned resources and local verification files
 /resources/local/
