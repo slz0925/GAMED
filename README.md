@@ -10,6 +10,10 @@ adjusts their distributions, and Veto Voting combines branch and final-mixture
 predictions. An early fusion (MM) branch provides consistency-related information.
 See [MODEL_MAP.md](docs/MODEL_MAP.md) for the architecture and its implementation.
 
+## Architecture
+
+![GAMED architecture](assets/gamed_architecture.png)
+
 The code supports **Fakeddit** and **Yang**, with two independent model classes:
 
 | Selector | Model |
@@ -110,12 +114,12 @@ details are in [REPRODUCE.md](docs/REPRODUCE.md).
 
 ```bibtex
 @inproceedings{shen2025gamed,
-  author = {Lingzhi Shen and Yunfei Long and Xiaohao Cai and Imran Razzak and Guanming Chen and Kang Liu and Shoaib Jameel},
-  title = {{GAMED}: Knowledge Adaptive Multi-Experts Decoupling for Multimodal Fake News Detection},
-  booktitle = {Proceedings of the Eighteenth ACM International Conference on Web Search and Data Mining},
-  year = {2025},
-  pages = {586--595},
-  doi = {10.1145/3701551.3703541}
+  title={{GAMED}: Knowledge adaptive multi-experts decoupling for multimodal fake news detection},
+  author={Shen, Lingzhi and Long, Yunfei and Cai, Xiaohao and Razzak, Imran and Chen, Guanming and Liu, Kang and Jameel, Shoaib},
+  booktitle={Proceedings of the Eighteenth ACM International Conference on Web Search and Data Mining},
+  pages={586--595},
+  year={2025},
+  doi={10.1145/3701551.3703541}
 }
 ```
 

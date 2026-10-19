@@ -8,12 +8,34 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 from urllib.parse import unquote, urlsplit
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_EXTENSIONS = {
     '.pth', '.pt', '.pkl', '.bin', '.safetensors', '.ckpt', '.zip', '.npz',
     '.pickle', '.csv', '.tsv', '.xlsx', '.out', '.log', '.pyc', '.pem', '.key',
 }
+
+
+def valid_png(data):
+    """Check the PNG signature, chunk boundaries, checksums and final marker."""
+    if not data.startswith(b'\x89PNG\r\n\x1a\n'):
+        return False
+    offset = 8
+    while offset + 12 <= len(data):
+        size = int.from_bytes(data[offset:offset+4], 'big')
+        kind = data[offset+4:offset+8]
+        end = offset + 8 + size
+        if end + 4 > len(data):
+            return False
+        if offset == 8 and (kind != b'IHDR' or size != 13):
+            return False
+        if zlib.crc32(data[offset+4:end]) != int.from_bytes(data[end:end+4], 'big'):
+            return False
+        if kind == b'IEND':
+            return size == 0 and end + 4 == len(data)
+        offset = end + 4
+    return False
 
 
 def check():
@@ -107,6 +129,10 @@ def check():
                     result['errors'].append(name+': broken local link '+target)
                 elif linked.is_file() and linked.relative_to(ROOT).as_posix() not in names:
                     result['errors'].append(name+': linked file absent from public inventory '+target)
+        if name == 'assets/gamed_architecture.png':
+            if not valid_png(path.read_bytes()):
+                result['errors'].append('Invalid PNG asset: '+name)
+            continue
         try:
             text=path.read_text(encoding='utf-8-sig')
         except UnicodeDecodeError:

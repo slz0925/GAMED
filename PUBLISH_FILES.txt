@@ -3,6 +3,7 @@ CNN_architectures/pytorch_InceptionResNetV2.py
 LICENSE
 PUBLISH_FILES.txt
 README.md
+assets/gamed_architecture.png
 checkpoint/README.md
 config/paths.example.json
 data/Fakeddit_dataset.py
