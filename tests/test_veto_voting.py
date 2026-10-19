@@ -2,6 +2,7 @@
 import ast
 import copy
 import math
+import itertools
 from pathlib import Path
 import unittest
 
@@ -85,100 +86,219 @@ class VetoTensorTests(unittest.TestCase):
                                    rtol=1e-12, atol=1e-12)
         return m, e, actual
 
-    def test_no_rule_preserves_exact_logit(self):
-        m, e, actual = self.assert_probability(.4, [.2, .3, .6, .7], .4)
-        self.assertTrue(torch.equal(actual, m))
+    def test_figure6_case1_retains_real_mixture(self):
+        m, _, out = self.assert_probability(.306, [.230, .278, .737, .408], .306)
+        self.assertTrue(torch.equal(out, m))
 
-    def test_veto1_replaces_an_opposing_mixture(self):
+    def test_figure6_case2_selects_text_expert(self):
+        self.assert_probability(.487, [.251, .177, .978, .424], .978)
+
+    def test_figure6_case3_averages_once_with_is(self):
+        self.assert_probability(.791, [.496, .596, .462, .488], .6935)
+
+    def test_no_rule_preserves_exact_logit(self):
+        m, _, out = self.assert_probability(.4, [.2, .3, .6, .7], .4)
+        self.assertTrue(torch.equal(out, m))
+
+    def test_veto1_replaces_opposing_mixture_for_both_classes(self):
         self.assert_probability(.2, [.98, .2, .3, .4], .98)
+        self.assert_probability(.8, [.02, .8, .7, .6], .02)
 
     def test_veto1_also_applies_to_same_class(self):
         self.assert_probability(.7, [.98, .6, .7, .8], .98)
+        self.assert_probability(.3, [.02, .4, .3, .2], .02)
 
-    def test_veto1_requires_exceeding_mixture(self):
+    def test_veto1_requires_exceeding_mixture_confidence(self):
         self.assert_probability(.99, [.98, .6, .7, .8], .99)
         self.assert_probability(.98, [.98, .6, .7, .8], .98)
+        self.assert_probability(.01, [.98, .6, .7, .8], .01)
 
     def test_veto1_requires_high_threshold(self):
         self.assert_probability(.3, [.94, .6, .7, .8], .3)
+        self.assert_probability(.7, [.06, .4, .3, .2], .7)
 
-    def test_veto2_averages_with_highest_expert(self):
-        self.assert_probability(.2, [.01, .2, .3, .8], .5)
+    def test_veto1_selects_highest_class_confidence_not_fake_probability(self):
+        self.assert_probability(.6, [.97, .99, .98, .7], .99)
+        self.assert_probability(.6, [.97, .005, .98, .7], .005)
 
-    def test_low_minority_does_not_trigger(self):
-        self.assert_probability(.2, [.01, .6, .7, .8], .2)
+    def test_veto1_opposing_exact_tie_retains_mixture_and_gradient(self):
+        m = self.logits([[.6]], grad=True)
+        e = torch.tensor([[5., -5., 1., -1.]], dtype=m.dtype, requires_grad=True)
+        out = self.vote(m, e)
+        self.assertTrue(torch.equal(out, m))
+        out.sum().backward()
+        torch.testing.assert_close(m.grad, torch.ones_like(m))
+        torch.testing.assert_close(e.grad, torch.zeros_like(e))
+
+    def test_veto1_same_class_ties_share_gradient(self):
+        for sign in (1, -1):
+            m = self.logits([[.6]], grad=True)
+            e = torch.tensor([[5.*sign, 5.*sign, 1., -1.]], dtype=m.dtype, requires_grad=True)
+            self.assertTrue(torch.equal(self.vote(m, e), e[:, :1]))
+            self.vote(m, e).sum().backward()
+            torch.testing.assert_close(m.grad, torch.zeros_like(m))
+            torch.testing.assert_close(e.grad, e.new_tensor([[.5, .5, 0., 0.]]))
+
+    def test_veto1_ties_below_stronger_expert_do_not_block_replacement(self):
+        m = torch.zeros((1, 1), dtype=torch.float64)
+        e = m.new_tensor([[4., -4., 5., 1.]])
+        self.assertTrue(torch.equal(self.vote(m, e), e[:, 2:3]))
+
+    def test_veto1_precedes_veto2(self):
+        self.assert_probability(.8, [.49, .48, .47, .99], .99)
+
+    def test_veto2_is_single_average_not_three_updates(self):
+        self.assert_probability(.8, [.49, .48, .47, .6], .7)
+
+    def test_veto2_selects_real_minority_symmetrically(self):
+        self.assert_probability(.2, [.51, .52, .53, .4], .3)
+
+    def test_high_confidence_real_majority_is_not_low_confidence(self):
+        # Veto 1 legitimately selects .01; Veto 2 must not average with .8.
+        self.assert_probability(.8, [.01, .02, .03, .8], .01)
+
+    def test_one_reliable_majority_member_blocks_veto2(self):
+        self.assert_probability(.8, [.49, .48, .2, .6], .8)
+        self.assert_probability(.2, [.51, .52, .8, .4], .2)
+
+    def test_one_low_confidence_expert_does_not_invalidate_majority(self):
+        self.assert_probability(.8, [.49, .2, .3, .6], .8)
+
+    def test_mix_agrees_with_low_majority(self):
+        self.assert_probability(.4, [.49, .48, .47, .6], .4)
+        self.assert_probability(.6, [.51, .52, .53, .4], .6)
+
+    def test_minority_must_be_reliable(self):
+        self.assert_probability(.8, [.49, .48, .47, .54], .8)
+        self.assert_probability(.2, [.51, .52, .53, .46], .2)
+
+    def test_unanimous_majority_has_no_minority(self):
+        self.assert_probability(.8, [.49, .48, .47, .46], .8)
+        self.assert_probability(.2, [.51, .52, .53, .54], .2)
 
     def test_two_two_tie_does_not_trigger_even_if_mixture_breaks_tie(self):
-        self.assert_probability(.2, [.01, .02, .8, .9], .2)
+        self.assert_probability(.8, [.49, .48, .6, .7], .8)
 
-    def test_probability_half_counts_as_positive(self):
-        self.assert_probability(.2, [.01, .2, .5, .5], .2)
+    def test_probability_half_counts_as_fake(self):
+        # Three Fake votes (including two exact halves) oppose a Real mixture.
+        self.assert_probability(.2, [.5, .5, .51, .4], .3)
 
-    def test_multiple_veto1_selects_highest_probability(self):
-        self.assert_probability(.2, [.97, .99, .98, .7], .99)
+    def test_high_confidence_mix_is_protected_from_veto2(self):
+        self.assert_probability(.99, [.49, .48, .47, .6], .99)
+        self.assert_probability(.01, [.51, .52, .53, .4], .01)
 
-    def test_each_low_majority_expert_updates_once(self):
-        # Three averages: (initial + 7 * maximum) / 8, not one average.
-        self.assert_probability(.1, [.01, .02, .03, .8], .7125)
-
-    def test_high_and_low_rules_in_same_sample(self):
-        self.assert_probability(.1, [.01, .02, .03, .98], .98)
-        self.assert_probability(.1, [.98, .01, .02, .03], .98)
-
-    def test_all_negative_keeps_a_nonempty_maximum_set(self):
-        # Four averages with maximum=.04: (.8 + 15*.04) / 16.
-        self.assert_probability(.8, [.01, .02, .03, .04], .0875)
-
-    def test_maximum_excludes_mixture(self):
-        self.assert_probability(.9, [.01, .2, .3, .7], .8)
-
-    def test_strict_threshold_boundaries_in_logit_space(self):
+    def test_high_threshold_strictness_and_mix_protection(self):
         for dtype in (torch.float32, torch.float64):
-            m = self.logits([[.2]], dtype)
-            for probability, rest in ((.05, [.2, .3, .8]), (.95, [.2, .3, .8])):
-                e = self.logits([[probability, *rest]], dtype)
+            h = torch.logit(torch.tensor(.95, dtype=dtype))
+            for sign in (1, -1):
+                m = torch.zeros((1, 1), dtype=dtype)
+                e = m.new_tensor([[0., .4, -.4, .2]])
+                e[:, 0] = sign*h
                 self.assertTrue(torch.equal(self.vote(m, e), m))
-                below, above = e.clone(), e.clone()
-                below[:, 0] = torch.nextafter(e[:, 0], e.new_tensor(-math.inf))
-                above[:, 0] = torch.nextafter(e[:, 0], e.new_tensor(math.inf))
-                if probability == .05:
-                    torch.testing.assert_close(self.vote(m, below).sigmoid(), m.new_tensor([[.5]]))
-                    self.assertTrue(torch.equal(self.vote(m, above), m))
-                else:
-                    self.assertTrue(torch.equal(self.vote(m, below), m))
-                    torch.testing.assert_close(self.vote(m, above), above[:, :1])
+                e[:, 0] = sign*torch.nextafter(h, h.new_tensor(math.inf))
+                self.assertTrue(torch.equal(self.vote(m, e), e[:, :1]))
+                e[:, 0] = sign*torch.nextafter(h, h.new_tensor(-math.inf))
+                self.assertTrue(torch.equal(self.vote(m, e), m))
+                e = self.logits([[.49, .48, .47, .6]], dtype)*sign
+                m = (sign*h).reshape(1, 1)
+                self.assertTrue(torch.equal(self.vote(m, e), m))
+                below = (sign*torch.nextafter(h, h.new_tensor(-math.inf))).reshape(1, 1)
+                self.assertFalse(torch.equal(self.vote(below, e), below))
+
+    def test_low_threshold_strict_for_every_majority_member(self):
+        for dtype in (torch.float32, torch.float64):
+            low = torch.logit(torch.tensor(.55, dtype=dtype))
+            m = self.logits([[.8]], dtype)
+            e = self.logits([[.49, .48, .47, .6]], dtype)
+            for column in range(3):
+                changed = e.clone(); changed[:, column] = -low
+                self.assertTrue(torch.equal(self.vote(m, changed), m))
+                changed[:, column] = -torch.nextafter(low, low.new_tensor(-math.inf))
+                torch.testing.assert_close(self.vote(m, changed).sigmoid(), m.new_tensor([[.7]]))
+                changed[:, column] = -torch.nextafter(low, low.new_tensor(math.inf))
+                self.assertTrue(torch.equal(self.vote(m, changed), m))
+
+    def test_low_threshold_strict_for_minority(self):
+        for dtype in (torch.float32, torch.float64):
+            low = torch.logit(torch.tensor(.55, dtype=dtype))
+            m = self.logits([[.8]], dtype)
+            e = self.logits([[.49, .48, .47, .6]], dtype)
+            e[:, 3] = low
+            self.assertTrue(torch.equal(self.vote(m, e), m))
+            e[:, 3] = torch.nextafter(low, low.new_tensor(math.inf))
+            torch.testing.assert_close(self.vote(m, e).sigmoid(), m.new_tensor([[.675]]))
+            e[:, 3] = torch.nextafter(low, low.new_tensor(-math.inf))
+            self.assertTrue(torch.equal(self.vote(m, e), m))
+
+    def test_custom_thresholds_are_effective(self):
+        m, e = self.logits([[.6]]), self.logits([[.93, .7, .6, .4]])
+        self.assertTrue(torch.equal(self.vote(m, e), m))
+        self.assertTrue(torch.equal(self.vote(m, e, .6, .9), e[:, :1]))
+        m, e = self.logits([[.8]]), self.logits([[.44, .43, .42, .7]])
+        self.assertTrue(torch.equal(self.vote(m, e), m))
+        torch.testing.assert_close(self.vote(m, e, .6, .95).sigmoid(), m.new_tensor([[.75]]))
+
+    def test_permutations_preserve_values_and_corresponding_gradients(self):
+        cases = [(.6, [5., -5., 1., -1.]), (.6, [5., 5., 1., -1.]),
+                 (.6, [5., -6., 1., -1.]),
+                 (.8, self.logits([.49, .48, .47, .6]).tolist())]
+        for probability, row in cases:
+            m, e = self.logits([[probability]], grad=True), torch.tensor([row], dtype=torch.float64, requires_grad=True)
+            reference = self.vote(m, e)
+            gm, ge = torch.autograd.grad(reference.sum(), (m, e))
+            for permutation in itertools.permutations(range(4)):
+                pm, pe = m.detach().clone().requires_grad_(), e.detach()[:, permutation].clone().requires_grad_()
+                actual = self.vote(pm, pe)
+                am, ae = torch.autograd.grad(actual.sum(), (pm, pe))
+                self.assertTrue(torch.equal(actual, reference))
+                torch.testing.assert_close(am, gm)
+                torch.testing.assert_close(ae, ge[:, permutation])
+
+    def test_sign_reversal_symmetry_away_from_zero(self):
+        for mixture, row in ((.3, [.98, .6, .7, .8]), (.8, [.49, .48, .47, .6]),
+                             (.4, [.2, .3, .6, .7]), (.8, [.49, .48, .47, .54])):
+            m, e = self.logits([[mixture]]), self.logits([row])
+            torch.testing.assert_close(self.vote(-m, -e), -self.vote(m, e), rtol=0, atol=0)
 
     def test_batch_shape_dtype_device_and_input_immutability(self):
         for dtype in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
-            m = self.logits([[.2], [.1], [.4]], dtype)
-            e = self.logits([[.98, .2, .3, .4], [.01, .02, .03, .8], [.2, .3, .6, .7]], dtype)
+            m = self.logits([[.2], [.8], [.4]], dtype)
+            e = self.logits([[.98, .2, .3, .4], [.49, .48, .47, .6], [.2, .3, .6, .7]], dtype)
             before_m, before_e = m.clone(), e.clone()
             result = self.vote(m, e)
             self.assertEqual((result.shape, result.dtype, result.device), (m.shape, dtype, m.device))
-            self.assertTrue(torch.equal(m, before_m))
-            self.assertTrue(torch.equal(e, before_e))
+            self.assertTrue(torch.equal(m, before_m)); self.assertTrue(torch.equal(e, before_e))
             self.assertTrue(torch.isfinite(result).all())
             probabilities = result.sigmoid()
             self.assertTrue(((probabilities >= 0) & (probabilities <= 1)).all())
             for index in range(3):
                 torch.testing.assert_close(result[index:index+1], self.vote(m[index:index+1], e[index:index+1]))
-            torch.testing.assert_close(probabilities, m.new_tensor([[.98], [.7125], [.4]]),
+            torch.testing.assert_close(probabilities, m.new_tensor([[.98], [.7], [.4]]),
                                        rtol=.02 if dtype in (torch.float16, torch.bfloat16) else 1e-5,
                                        atol=.002 if dtype in (torch.float16, torch.bfloat16) else 1e-6)
 
-    def test_extreme_finite_logits_do_not_need_probability_clipping(self):
-        m = torch.tensor([[1000.], [-1000.]], dtype=torch.float64, requires_grad=True)
-        e = torch.tensor([[-1000., -900., -800., 500.], [-1000., -900., -800., -700.]],
-                         dtype=torch.float64, requires_grad=True)
-        result = self.vote(m, e)
-        self.assertTrue(torch.isfinite(result).all())
-        # Three/four averages leave probabilities asymptotic to these logits.
-        torch.testing.assert_close(result, m.new_tensor([[500. + math.log(8/7)],
-                                                        [-700. + math.log(15/16)]]))
-        loss = torch.nn.functional.binary_cross_entropy_with_logits(result, torch.tensor([[0.], [1.]]))
-        loss.backward()
-        self.assertTrue(torch.isfinite(m.grad).all())
-        self.assertTrue(torch.isfinite(e.grad).all())
+    def test_extreme_finite_logits_and_gradients(self):
+        for dtype in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
+            large = torch.finfo(dtype).max
+            m = torch.tensor([[large], [-large], [0.], [0.]], dtype=dtype, requires_grad=True)
+            e = torch.tensor([[-large, -large/2, -1., 1.], [large, large/2, -1., 1.],
+                              [large, -1., 1., 2.], [-large, -1., 1., 2.]], dtype=dtype, requires_grad=True)
+            out = self.vote(m, e)
+            torch.testing.assert_close(out, m.new_tensor([[large], [-large], [large], [-large]]))
+            self.assertTrue(torch.isfinite(out).all())
+            out.sum().backward()
+            self.assertTrue(torch.isfinite(m.grad).all()); self.assertTrue(torch.isfinite(e.grad).all())
+
+    def test_half_precision_backward_and_cpu_autocast(self):
+        for dtype in (torch.float16, torch.bfloat16):
+            m, e = self.logits([[.8]], dtype, True), self.logits([[.49, .48, .47, .6]], dtype, True)
+            with torch.autocast('cpu', dtype=torch.bfloat16):
+                out = self.vote(m, e)
+            out.float().sigmoid().sum().backward()
+            self.assertTrue(torch.isfinite(m.grad).all()); self.assertTrue(torch.isfinite(e.grad).all())
+            self.assertGreater(m.grad.abs().sum(), 0)
+            self.assertGreater(e.grad[:, 3].abs().sum(), 0)
+            self.assertEqual(out.dtype, dtype)
 
     def test_no_rule_gradient_remains_on_mixture(self):
         m, e = self.logits([[.4]], grad=True), self.logits([[.2, .3, .6, .7]], grad=True)
@@ -192,30 +312,48 @@ class VetoTensorTests(unittest.TestCase):
         torch.testing.assert_close(m.grad, torch.zeros_like(m))
         torch.testing.assert_close(e.grad, e.new_tensor([[-.02, 0, 0, 0]]))
 
-    def test_veto2_gradient_connects_mixture_and_mm_maximum(self):
-        m, e = self.logits([[.2]], grad=True), self.logits([[.01, .2, .3, .8]], grad=True)
-        torch.nn.functional.binary_cross_entropy_with_logits(self.vote(m, e), torch.ones_like(m)).backward()
-        torch.testing.assert_close(m.grad, m.new_tensor([[-.16]]))
-        torch.testing.assert_close(e.grad, e.new_tensor([[0, 0, 0, -.16]]))
-
-    def test_equal_maxima_use_first_expert_for_gradient(self):
-        m, e = self.logits([[.8]], grad=True), self.logits([[.01, .02, .2, .2]], grad=True)
-        self.vote(m, e).sigmoid().sum().backward()
-        torch.testing.assert_close(m.grad, m.new_tensor([[.04]]))
-        torch.testing.assert_close(e.grad, e.new_tensor([[0, 0, .12, 0]]))
+    def test_veto2_gradient_connects_only_mix_and_selected_minority(self):
+        m, e = self.logits([[.8]], grad=True), self.logits([[.49, .48, .47, .6]], grad=True)
+        out = self.vote(m, e)
+        # d BCE(y=1)/d p_new = -1/.7, with each probability weighted by 1/2.
+        torch.nn.functional.binary_cross_entropy_with_logits(out, torch.ones_like(m)).backward()
+        torch.testing.assert_close(m.grad, m.new_tensor([[-.5*.8*.2/.7]]))
+        torch.testing.assert_close(e.grad, e.new_tensor([[0, 0, 0, -.5*.6*.4/.7]]))
 
     def test_train_and_inference_values_match(self):
-        m, e = self.logits([[.2]], grad=True), self.logits([[.01, .2, .3, .8]], grad=True)
+        m, e = self.logits([[.8]], grad=True), self.logits([[.49, .48, .47, .6]], grad=True)
         training = self.vote(m, e)
         with torch.no_grad():
             inference = self.vote(m, e)
         self.assertTrue(torch.equal(training, inference))
-        self.assertTrue(training.requires_grad)
-        self.assertFalse(inference.requires_grad)
+        self.assertTrue(training.requires_grad); self.assertFalse(inference.requires_grad)
 
     def test_autograd_matches_finite_differences_away_from_boundaries(self):
-        m, e = self.logits([[.2]], grad=True), self.logits([[.01, .2, .3, .8]], grad=True)
-        self.assertTrue(torch.autograd.gradcheck(self.vote, (m, e), fast_mode=True))
+        for probability, row in ((.8, [.49, .48, .47, .6]), (.2, [.51, .52, .53, .4]),
+                                 (.3, [.98, .6, .7, .8]), (.4, [.2, .3, .6, .7])):
+            m, e = self.logits([[probability]], grad=True), self.logits([row], grad=True)
+            self.assertTrue(torch.autograd.gradcheck(self.vote, (m, e), fast_mode=True))
+
+    def test_empty_batch(self):
+        m = torch.empty((0, 1)); e = torch.empty((0, 4))
+        self.assertEqual(self.vote(m, e).shape, (0, 1))
+
+    def test_voting_does_not_consume_torch_rng(self):
+        m, e = self.logits([[.8]]), self.logits([[.49, .48, .47, .6]])
+        state = torch.random.get_rng_state().clone()
+        self.vote(m, e)
+        self.assertTrue(torch.equal(state, torch.random.get_rng_state()))
+
+    def test_invalid_shapes_dtypes_devices_and_thresholds_are_rejected(self):
+        m, e = self.logits([[.2]]), self.logits([[.49, .48, .47, .6]])
+        for bad_m, bad_e in ((m.flatten(), e), (m, e[:, :3]), (m, e.float()),
+                             (m.long(), e.long()), (m, e.to('meta'))):
+            with self.assertRaises(ValueError):
+                self.vote(bad_m, bad_e)
+        for low, high in ((0, .95), (.55, 1), (.5, .95), (.95, .55), (.6, .6),
+                          (float('nan'), .95), (.55, float('inf'))):
+            with self.assertRaises(ValueError):
+                self.vote(m, e, low, high)
 
     def test_actual_loss_and_evaluation_fragments_receive_logits(self):
         entry = source_tree('run_gamed.py')
@@ -231,8 +369,8 @@ class VetoTensorTests(unittest.TestCase):
                        and isinstance(n.value, ast.Tuple)
                        and isinstance(n.targets[0].elts[0], ast.Name)
                        and n.targets[0].elts[0].id == 'mix_output')
-        m = self.logits([[.2], [.2]])
-        e = self.logits([[.98, .2, .3, .4], [.01, .2, .3, .8]])
+        m = self.logits([[.2], [.8]])
+        e = self.logits([[.98, .2, .3, .4], [.49, .48, .47, .6]])
         voted = self.vote(m, e)
         ns = dict(torch=torch, criterion=torch.nn.BCEWithLogitsLoss(), mix_output=voted,
                   labels=torch.tensor([[1.], [0.]], dtype=m.dtype), is_output=e[:, :1],
@@ -241,22 +379,12 @@ class VetoTensorTests(unittest.TestCase):
         execute([assignment(main, 'mix_loss')], ns)
         execute([assignment(evaluate, 'val_loss'), assignment(evaluate, 'threshold'), assignment(evaluate, 'THRESH'),
                  sigmoid, assignment(evaluate, 'validate_argmax')], ns)
-        expected_loss = (-math.log(.98) - math.log(.5)) / 2
+        expected_loss = (-math.log(.98) - math.log(.3)) / 2
         self.assertAlmostEqual(ns['mix_loss'].item(), expected_loss, places=12)
         self.assertAlmostEqual(ns['val_loss'].item(), expected_loss, places=12)
-        torch.testing.assert_close(ns['mix_output'], m.new_tensor([[.98], [.5]]))
+        torch.testing.assert_close(ns['mix_output'], m.new_tensor([[.98], [.7]]))
         self.assertEqual(ns['THRESH'], [.5+i/1000 for i in range(-50, 50)])
         torch.testing.assert_close(ns['validate_argmax'], torch.ones((2, 1), dtype=torch.int64))
-
-    def test_invalid_shapes_dtypes_and_thresholds_are_rejected(self):
-        m, e = self.logits([[.2]]), self.logits([[.01, .2, .3, .8]])
-        for bad_m, bad_e in ((m.flatten(), e), (m, e[:, :3]), (m, e.float()),
-                             (m.long(), e.long()), (m, e.to('meta'))):
-            with self.assertRaises(ValueError):
-                self.vote(bad_m, bad_e)
-        for low, high in ((0, .95), (.05, 1), (.6, .95), (.05, .4)):
-            with self.assertRaises(ValueError):
-                self.vote(m, e, low, high)
 
 
 if __name__ == '__main__':

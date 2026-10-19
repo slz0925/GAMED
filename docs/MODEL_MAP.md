@@ -50,33 +50,46 @@ See [REPRODUCE.md](REPRODUCE.md) for the loss and encoder update schedule,
 
 ### Veto outputs
 
-`gamed` combines Veto 1 replacement with Veto 2 averaging.
-Let `p_i` be an expert's sigmoid probability and `p` the current mixture
-probability, initially `sigmoid(mix_classifier(...))`:
+The Veto Voting mechanism combines confidence-based expert selection with
+majority-aware arbitration.
 
-- Veto 1: if `p_i > high` and `p_i > p`, replace `p` with `p_i`.
-- Veto 2: if `p_i < low` and the expert belongs to the strict majority class,
-  replace `p` with `(p + max_j p_j) / 2`.
-- Values equal to either threshold do not trigger that rule.
+For a binary logit `O`, let `p = sigmoid(O)` and class confidence
+`C = max(p, 1-p)`. A probability `p >= 0.5` predicts Fake; otherwise it predicts
+Real. The default class-confidence thresholds are `low=0.55` and `high=0.95`,
+configurable through `GAMED.veto_voting(low_threshold=..., high_threshold=...)`.
+Valid thresholds satisfy `0.5 < low < high < 1`.
 
-The default thresholds are `low=0.05` and `high=0.95`. IP, IS, T and MM
-vote using their initial probabilities (`p_i >= 0.5` means Fake); the mixture
-does not vote. A 2:2 tie disables Veto 2. The maximum is taken over all four
-experts, without excluding a class or including the mixture. Experts are
-processed in IP/IS/T/MM order; every qualifying expert updates the current
-mixture once.
+- **Veto 1:** an expert must have `C_i > high` and `C_i > C_mix`. Select the
+  highest-confidence expert and return its original logit. Opposing classes
+  tied at the highest confidence retain the original mixture. Successful
+  replacement takes precedence over Veto 2.
+- **Veto 2:** IP, IS, T and MM vote using their original predictions; the mixture
+  does not vote. At least three votes must agree, and every member of that
+  majority must have `C_i < low`. The mixture must disagree with the majority
+  and have `C_mix < high`. A minority expert must have `C_i > low`; select the
+  most confident minority expert and update once:
+  `p_new = (p_mix + p_selected) / 2`. With four voters, a strict majority leaves
+  at most one minority expert. A 2:2 tie, no minority, or insufficient minority
+  confidence leaves the mixture unchanged.
+
+Both rules treat Real and Fake symmetrically. Equality does not satisfy a
+strict expert threshold; a mixture with `C_mix >= high` is protected from
+Veto 2. Expert ordering does not affect the result.
 
 The model returns **logits** in both training and evaluation. Replacement uses
 the selected expert logit; averaging uses a stable, equivalent logit expression,
-without probability clipping. If no rule triggers, the mixture logit is retained
-exactly. `BCEWithLogitsLoss` therefore receives logits, and the evaluation sigmoid
-recovers the voted probability. `gamed_without_veto` keeps its unmodified output.
+without probability clipping. Float16 and bfloat16 inputs use float32 for
+comparisons and averaging, with the output returned in the input dtype.
+If no rule triggers, the mixture logit is retained exactly.
+`BCEWithLogitsLoss` receives logits, and the evaluation sigmoid recovers the
+voted probability. `gamed_without_veto` returns the mixture logit without voting.
 
 Voting participates in the training loss. Hard comparisons do not carry
 gradients, but selected values do: replacement routes the mixture loss to the
-selected expert; averaging connects the current mixture and maximum expert.
-Tied maxima route gradients to the first expert in IP/IS/T/MM order.
-Veto adds no parameters or checkpoint keys.
+selected expert; averaging connects the original mixture and selected minority
+expert. Same-class tied maxima split the replacement gradient equally;
+opposing tied maxima retain the mixture gradient. Veto adds no parameters or
+checkpoint keys.
 
 ## Ablations
 

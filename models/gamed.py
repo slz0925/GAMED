@@ -417,13 +417,14 @@ class GAMED(nn.Module):
                torch.mean(self.irrelevant_tensor)
 
     @staticmethod
-    def veto_voting(mix_logits, expert_logits, low_threshold=0.05, high_threshold=0.95):
-        """Apply Veto Voting to binary logits and return binary logits.
+    def veto_voting(mix_logits, expert_logits, low_threshold=0.55, high_threshold=0.95):
+        """Apply confidence-aware Veto Voting and return binary logits.
 
-        Expert columns are IP, IS, T and MM. Their initial decisions determine
-        the strict majority; a 2:2 tie disables Veto 2. Each qualifying expert
-        updates the current mixture once, in column order. The maximum in Veto 2
-        includes all four experts, excluding the mixture. See docs/MODEL_MAP.md.
+        IP, IS, T and MM vote with class confidence max(p, 1-p). Veto 1 selects
+        the most confident eligible expert; opposing tied maxima retain the
+        mixture. Veto 2 averages once with a reliable minority expert when all
+        members of the opposing strict majority have low confidence.
+        Thresholds refer to class confidence. See docs/MODEL_MAP.md.
         """
         if (mix_logits.ndim != 2 or mix_logits.shape[1] != 1
                 or expert_logits.shape != (mix_logits.shape[0], 4)):
@@ -432,33 +433,49 @@ class GAMED(nn.Module):
                 or mix_logits.dtype != expert_logits.dtype
                 or mix_logits.device != expert_logits.device):
             raise ValueError('Veto logits must share a floating dtype and device')
-        if not 0 < low_threshold < 0.5 < high_threshold < 1:
-            raise ValueError('Veto thresholds must satisfy 0 < low < 0.5 < high < 1')
+        if not 0.5 < low_threshold < high_threshold < 1:
+            raise ValueError('Veto thresholds must satisfy 0.5 < low < high < 1')
 
-        # Logit comparisons avoid sigmoid rounding near zero or one.
-        low_logit = torch.logit(expert_logits.new_tensor(low_threshold))
-        high_logit = torch.logit(expert_logits.new_tensor(high_threshold))
-        positive = expert_logits >= 0
+        # C = sigmoid(abs(logit)); compare magnitudes without sigmoid saturation.
+        # Half-precision inputs use float32 for thresholds and stable averaging.
+        mix = mix_logits.float() if mix_logits.dtype in (torch.float16, torch.bfloat16) else mix_logits
+        experts = expert_logits.float() if expert_logits.dtype in (torch.float16, torch.bfloat16) else expert_logits
+        low_logit = torch.logit(experts.new_tensor(low_threshold))
+        high_logit = torch.logit(experts.new_tensor(high_threshold))
+        confidence = experts.abs()
+        mix_confidence = mix.abs()
+        positive = experts >= 0
+        maximum = confidence.amax(dim=1, keepdim=True)
+        strongest = confidence == maximum
+        strongest_positive = (strongest & positive).any(dim=1, keepdim=True)
+        strongest_negative = (strongest & ~positive).any(dim=1, keepdim=True)
+        conflict = strongest_positive & strongest_negative
+        veto1 = (maximum > high_logit) & (maximum > mix_confidence) & ~conflict
+        # Same-class tied maxima share gradients, independently of column order.
+        replacement = torch.where(strongest_positive,
+                                  expert_logits.amax(dim=1, keepdim=True),
+                                  expert_logits.amin(dim=1, keepdim=True))
+
         positive_count = positive.sum(dim=1, keepdim=True)
         majority_positive = positive_count > 2
-        majority_negative = positive_count < 2
-        maximum = expert_logits.max(dim=1, keepdim=True).values
-        current = mix_logits
-        for index in range(4):
-            expert = expert_logits[:, index:index + 1]
-            veto1 = (expert > high_logit) & (expert > current)
-            current = torch.where(veto1, expert, current)
-            in_majority = torch.where(positive[:, index:index + 1],
-                                      majority_positive, majority_negative)
-            veto2 = (expert < low_logit) & in_majority
-            # logit((sigmoid(current) + sigmoid(maximum)) / 2), without clipping.
-            log_positive = torch.logaddexp(torch.nn.functional.logsigmoid(current),
-                                          torch.nn.functional.logsigmoid(maximum))
-            log_negative = torch.logaddexp(torch.nn.functional.logsigmoid(-current),
-                                          torch.nn.functional.logsigmoid(-maximum))
-            average = log_positive - log_negative
-            current = torch.where(veto2, average, current)
-        return current
+        strict_majority = (positive_count > 2) | (positive_count < 2)
+        in_majority = positive == majority_positive
+        all_majority_low = ((confidence < low_logit) | ~in_majority).all(dim=1, keepdim=True)
+        minority = ~in_majority & strict_majority
+        minority_confidence = confidence.masked_fill(~minority, -1).amax(dim=1, keepdim=True)
+        selected = minority & (confidence == minority_confidence)
+        # With four voters and a strict majority, there is at most one minority member.
+        minority_logit = torch.where(selected, experts, torch.zeros_like(experts)).sum(dim=1, keepdim=True)
+        veto2 = (~veto1 & ~conflict & strict_majority & all_majority_low
+                 & ((mix >= 0) != majority_positive)
+                 & (minority_confidence > low_logit) & (mix_confidence < high_logit))
+        # logit((sigmoid(mix) + sigmoid(minority_logit)) / 2), without clipping.
+        log_positive = torch.logaddexp(torch.nn.functional.logsigmoid(mix),
+                                      torch.nn.functional.logsigmoid(minority_logit))
+        log_negative = torch.logaddexp(torch.nn.functional.logsigmoid(-mix),
+                                      torch.nn.functional.logsigmoid(-minority_logit))
+        average = (log_positive - log_negative).to(dtype=mix_logits.dtype)
+        return torch.where(veto1, replacement, torch.where(veto2, average, mix_logits))
 
     def mapping(self, score):
         diff_with_thresh = torch.abs(score-self.thresh)

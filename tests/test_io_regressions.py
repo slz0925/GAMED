@@ -248,8 +248,8 @@ class IORegressionTests(unittest.TestCase):
                 return self.array.astype(np.float32)
 
         def resize_same_size(array, size, interpolation):
-            # No OpenCV interpolation claim: this isolates the real loader's
-            # channel/axis operations using an already correctly sized image.
+            # Same-size images isolate the loader's channel/axis operations
+            # from OpenCV interpolation.
             self.assertEqual(size, (2, 2))
             self.assertEqual(array.shape[:2], (2, 2))
             self.assertEqual(interpolation, 1)

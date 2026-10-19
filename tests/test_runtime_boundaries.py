@@ -13,7 +13,7 @@ import unittest
 import test_computation_contracts as contracts
 
 ROOT = contracts.ROOT
-EXPECTED_COMPUTATION_FIXTURE_SHA256 = '0a1504005fd2c82640d5af6681ca6ecc013985ab06b8e0ea1cdbdc75e33bc0dc'
+EXPECTED_COMPUTATION_FIXTURE_SHA256 = '925373d15df920f09599351cbca7e2b848567ee0e811d52e394e74dd4df77012'
 
 
 def marker(name):

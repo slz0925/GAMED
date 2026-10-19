@@ -19,9 +19,8 @@ bash scripts/validate_fakeddit.sh -checkpoint /path/to/fakeddit_checkpoint.pkl -
 
 The `/path/to/...` values above are placeholders: replace them with your existing
 trained state-dict files. Trained GAMED weights are not included.
-For validation, pass `-checkpoint` with the path to your trained state dict.
-Both validation scripts resolve it through the current resource configuration and
-require a file before starting model initialisation. `--help` exits without a
+Both validation scripts resolve the checkpoint path through the current resource
+configuration and require a file before starting model initialisation. `--help` exits without a
 checkpoint or model initialisation. Relative paths are based on the
 repository root. Quote paths containing spaces. See
 [CHECKPOINTS.md](../docs/CHECKPOINTS.md) for the required initialisation assets.
