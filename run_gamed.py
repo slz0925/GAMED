@@ -46,8 +46,8 @@ def validate_arguments(arguments):
 def initialise_runtime():
     """Load runtime dependencies and the English tokenizer before setting the seed."""
     global _read_path, np, torch, nn, DataLoader
-    global AutoTokenizer, ImageFile, token_uncased_fakeddit, Progbar
-    from resource_paths import resolve_read_path as _read_path, resolve_english_encoder_path
+    global Progbar
+    from resource_paths import resolve_read_path as _read_path
     import numpy as np
     import torch
     import torch.nn as nn
@@ -57,7 +57,7 @@ def initialise_runtime():
     import models_mae
     from PIL import ImageFile
     ImageFile.LOAD_TRUNCATED_IMAGES = True
-    token_uncased_fakeddit = AutoTokenizer.from_pretrained(resolve_english_encoder_path())
+    _get_english_tokenizer()
     from utils import Progbar
 
 
@@ -88,10 +88,20 @@ def to_var(x, device=None):
     return x
 
 
+def _get_english_tokenizer():
+    global token_uncased_fakeddit
+    if 'token_uncased_fakeddit' not in globals():
+        from transformers import AutoTokenizer
+        from resource_paths import resolve_english_encoder_path
+        token_uncased_fakeddit = AutoTokenizer.from_pretrained(resolve_english_encoder_path())
+    return token_uncased_fakeddit
+
+
 def collate_news_batch(data):
     """Tokenise each news batch once and preserve its sample order."""
+    import torch
     sentences, images, labels, image_paths = zip(*data)
-    tokens = token_uncased_fakeddit(
+    tokens = _get_english_tokenizer()(
         list(sentences), return_tensors='pt', truncation=True,
         padding='max_length', max_length=word_token_length)
     text = tuple(tokens[name] for name in ('input_ids', 'attention_mask', 'token_type_ids'))

@@ -53,7 +53,3 @@ train_*__val_*/
 !/outputs/.gitkeep
 /checkpoint/**
 !/checkpoint/README.md
-
-# Non-versioned resources and local verification files
-/resources/local/
-*integrity.local.json

@@ -34,11 +34,6 @@ Use explicit `prefix_map` entries for other locations and `-output_file` for
 run outputs. Read routing does not write or extract resources.
 See [REPRODUCE.md](REPRODUCE.md) for outputs.
 
-The [resource manifest](../resources/manifest.json) records reference file sizes
-and SHA-256 checksums; the loaders do not verify them. Use `sha256sum <file>` on
-Linux to compare a reference file with its manifest entry. Record the source
-and preparation recipe of any alternative tables.
-
 ## Loading rules
 
 Fakeddit requires `id`, `hasImage`, `clean_title`, `2_way_label`, `3_way_label`
@@ -82,8 +77,7 @@ as the source. Its image downloader saves files as `<id>.jpg`; place the images
 in `dataset/Fakeddit/images/images/` under `resource_root`.
 
 This loader requires `multimodal_train_cleaned.tsv` and
-`multimodal_validate_cleaned.tsv`, identified in the
-[resource manifest](../resources/manifest.json). They are derived tables, not
+`multimodal_validate_cleaned.tsv`. These are derived tables, not
 the upstream TSVs under new filenames. Obtain these prepared files and their
 matching images before running GAMED. Preparation scripts for the derived
 tables are not included; renaming the original downloads does not prepare them.
@@ -96,8 +90,8 @@ This is the raw table, not the prepared GAMED splits or a complete local image
 collection. It includes image URLs; the GAMED tables also require `image_name`
 and matching files in `dataset/Yang/images/`.
 
-Obtain `yang_train.tsv` and `yang_validate.tsv` matching the resource manifest,
-and place them with their matching images as shown above. These prepared tables
+Obtain `yang_train.tsv` and `yang_validate.tsv`, and place them with their
+matching images as shown above. These prepared tables
 contain 4,655 training and 1,165 validation rows. Their preparation scripts are
 not included; converting `all_data.csv` to TSV alone does not prepare them.
 

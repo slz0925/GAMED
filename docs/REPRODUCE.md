@@ -24,8 +24,6 @@ Other entry arguments are forwarded unchanged.
 | `-device` | CUDA device 0; respects inherited CUDA visibility |
 
 Seed 25 and cuDNN deterministic=False/benchmark=True are configured.
-The current loader requires the Linux
-`fork` environment described in [ENVIRONMENT.md](ENVIRONMENT.md).
 The entry uses AdamW with three name-based groups: image_encoder/text_encoder at
 1e-5, ip_backbone/irrelevant_tensor at 1e-4, and remaining parameters at 5e-5.
 With `-finetune` enabled, all three

@@ -37,11 +37,8 @@ copy the complete snapshot contents into this location, including the actual
 weight file; a cache container containing only `blobs/`, `refs/` and `snapshots/`
 is not the expected layout. Chinese ERNIE1 is not required.
 
-The [resource manifest](../resources/manifest.json) records reference file sizes
-and SHA-256 checksums for MAE, ERNIE and its tokeniser. Loading does not verify
-these checksums. Alternative exports must preserve model and tokeniser
-compatibility; record their source and version. Preserve the applicable component
-licences when obtaining or redistributing weights.
+Alternative exports must preserve model and tokeniser compatibility. Preserve
+the applicable component licences when obtaining or redistributing weights.
 
 ## Trained GAMED weights
 

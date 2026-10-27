@@ -31,7 +31,7 @@ models_mae.py, util/pos_embed.py  MAE and positional initialisation
 data/, utils/                 Dataset/image loading and progress reporting
 resource_paths.py, config/    Resource configuration
 scripts/                      Launcher and experiment commands
-docs/, resources/             Method, environment, data and checkpoint metadata
+docs/                         Method, environment, data and checkpoint documentation
 third_party/licenses/         Component licence texts
 checkpoint/                   Initialisation weights and default run outputs
 outputs/                      Optional run output root; payloads excluded from Git
@@ -39,10 +39,8 @@ outputs/                      Optional run output root; payloads excluded from G
 
 ## Installation
 
-Training and validation target Linux with CUDA and `fork` DataLoader workers;
-Windows and `spawn`/`forkserver` workers are not supported by the current entry.
-Install the dependencies in an isolated environment, using a PyTorch build
-suitable for the GPU and driver:
+Training and validation require CUDA. Install the dependencies in an isolated
+environment with a PyTorch build suitable for the GPU and driver:
 
 ```bash
 python -m pip install -r requirements.txt
