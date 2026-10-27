@@ -1,4 +1,3 @@
-
 from resource_paths import resolve_read_path as _read_path
 import cv2
 
@@ -6,10 +5,7 @@ import torch
 import torch.utils.data as data
 
 from .util import read_img, channel_convert
-import random
-import torchvision.transforms.functional as F
 
-from PIL import Image
 import os
 import pandas as pd
 import numpy as np
@@ -19,30 +15,25 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 class Yang_dataset(data.Dataset):
 
-    def __init__(self, root_path='../dataset', mode='train',image_size=224, is_train=True, remove_duplicate=True,
-                 is_sample_positive=0.5):
-        super(Yang_dataset, self).__init__()
-        self.remove_duplicate = remove_duplicate
-        self.is_train = is_train
-        self.root_path = root_path
-        self.is_sample_positive = is_sample_positive
-        self.index = 0
+    def __init__(self, root_path='../dataset', mode='train', image_size=224):
+        super().__init__()
+        root_path = os.fspath(root_path)
         self.label_dict = []
         self.image_size = image_size
-        self.image_path = self.root_path+'/Yang/images'
-        print(self.image_path)
-        list_dirs = os.listdir(_read_path(self.image_path))
+        self.image_path = root_path+'/Yang/images'
+        self.image_path = os.path.abspath(_read_path(self.image_path))
+        list_dirs = os.listdir(self.image_path)
         self.image_listdir = {}
         for list_dir in list_dirs:
             idx = list_dir.rfind('.')
             self.image_listdir[list_dir[:idx]] = list_dir
 
         train_path = root_path + '/Yang/yang_' + mode+'.tsv'
-        df = pd.read_csv(_read_path(train_path), sep="\t")
+        df = pd.read_csv(_read_path(train_path), sep="\t",
+                         dtype={'image_name': str, 'type': str, 'title': str, 'text': str})
         df = df.replace(np.nan, '', regex=True)
         df.fillna('', inplace=True)
         
-        self.IMAGE_DICT, self.IMAGE_DICT_KEYS = {}, []
         positive_records, negative_records = [], []
         rows = len(df.index)
         for i in tqdm(range(0, rows)):
@@ -53,34 +44,12 @@ class Yang_dataset(data.Dataset):
             record = {}
             record['images'] = images_name
             record['label'] = label
-            record['content'] = []
-            record['content'].append(content)
-
-            # Preserve each record when duplicate handling is disabled.
-            if not self.remove_duplicate:
-                if label == 0:
-                    negative_records.append(record)
-                else:
-                    positive_records.append(record)
-                self.label_dict.append(record)
+            record['content'] = content
+            if label == 0:
+                negative_records.append(record)
             else:
-                key = images_name+"_"+str(label)
-                if key not in self.IMAGE_DICT:
-                    if label == 0:
-                        negative_records.append(record)
-                    else:
-                        positive_records.append(record)
-                    
-                else:
-                    if self.is_sample_positive < 1 and label == 1 and random.random() > self.is_sample_positive:
-                        continue
-                    record_previous = self.IMAGE_DICT[key]
-                    record_previous['content'].append(content)
-        min_len = min(len(positive_records), len(negative_records))
-        if mode == "train":
-            self.label_dict = positive_records + negative_records
-        else:
-            self.label_dict = positive_records + negative_records
+                positive_records.append(record)
+        self.label_dict = positive_records + negative_records
 
         assert len(self.label_dict)!=0, 'Error: GT path is empty.'
 
@@ -90,19 +59,14 @@ class Yang_dataset(data.Dataset):
 
         # Select an image for this record.
         record = self.label_dict[index]
-        images, label, content_list = record['images'], record['label'], record['content']
-
-        idx_rand = random.randint(0, len(content_list) - 1)
-        content = content_list[idx_rand]
+        images, label, content = record['images'], record['label'], record['content']
 
         imgs = images.split(',')
         GT_path = imgs[np.random.randint(0, len(imgs))]
 
         try:
-            is_found_image = False
             if GT_path in self.image_listdir:
                 GT_path = self.image_listdir[GT_path]
-                is_found_image = True
 
             GT_path = "{}/{}".format(self.image_path,GT_path)
             img_GT = read_img(GT_path)
@@ -115,21 +79,11 @@ class Yang_dataset(data.Dataset):
         img_GT = cv2.resize(np.copy(img_GT), (GT_size, GT_size),
                             interpolation=cv2.INTER_LINEAR)
 
-        orig_height, orig_width, _ = img_GT.shape
-        H, W, _ = img_GT.shape
-
         # Reverse the channel order and convert HWC to a CHW tensor.
         if img_GT.shape[2] == 3:
             img_GT = img_GT[:, :, [2, 1, 0]]
         img_GT = torch.from_numpy(np.ascontiguousarray(np.transpose(img_GT, (2, 0, 1)))).float()
-        return (content, _, _), (img_GT, _, label, _, _),_
+        return content, img_GT, label, GT_path
 
     def __len__(self):
         return len(self.label_dict)
-
-    def to_tensor(self, img):
-        img = Image.fromarray(img)
-        img_t = F.to_tensor(img).float()
-        return img_t
-
-

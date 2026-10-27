@@ -9,37 +9,27 @@ import models_mae
 from timm.models.vision_transformer import Block
 
 class AdaIN(nn.Module):
-    def __init__(self):
+    """Prediction-guided affine adjustment with a signed scale."""
+
+    def __init__(self, eps=1e-5):
         super().__init__()
+        self.eps = eps
 
     def mu(self, x):
-        """Return the mean across the feature dimension for each sample."""
-        return torch.sum(x,(1))/(x.shape[1])
+        return x.mean(dim=1)
 
     def sigma(self, x):
-        """Return the per-sample feature standard deviation with an epsilon."""
-        return torch.sqrt((torch.sum((x.permute([1,0])-self.mu(x)).permute([1,0])**2,(1))+0.000000023)/(x.shape[1]))
+        return (x.var(dim=1, unbiased=False) + self.eps).sqrt()
 
     def forward(self, x, mu, sigma):
-        """Apply the existing prediction-guided feature adjustment."""
-        x_mean = self.mu(x)
-        x_std = self.sigma(x)
-        x_reduce_mean = x.permute([1, 0]) - x_mean
-        x_norm = x_reduce_mean/x_std
-        return (sigma.squeeze(1)*(x_norm + mu.squeeze(1))).permute([1,0])
-
-class SimpleGate(nn.Module):
-    def __init__(self, dim=1):
-        super(SimpleGate, self).__init__()
-        self.dim=dim
-
-    def forward(self,x):
-        x1,x2 = x.chunk(2,dim=self.dim)
-        return x1*x2
-
+        # Accumulate feature statistics in float32 for low-precision inputs.
+        work = x.float() if x.dtype in (torch.float16, torch.bfloat16) else x
+        variance, mean = torch.var_mean(work, dim=1, unbiased=False, keepdim=True)
+        normalised = (work - mean) * torch.rsqrt(variance + self.eps)
+        return (sigma.to(work.dtype) * normalised + mu.to(work.dtype)).to(x.dtype)
 
 class TokenAttention(torch.nn.Module):
-    """Aggregate token features using learned, unnormalised attention scores."""
+    """Aggregate token features using normalised token importance."""
 
     def __init__(self, input_shape):
         super(TokenAttention, self).__init__()
@@ -51,28 +41,21 @@ class TokenAttention(torch.nn.Module):
 
     def forward(self, inputs):
         scores = self.attention_layer(inputs).view(-1, inputs.size(1))
-        scores = scores.unsqueeze(1)
-        outputs = torch.matmul(scores, inputs).squeeze(1)
-        return outputs, scores
+        work = inputs.float() if inputs.dtype in (torch.float16, torch.bfloat16) else inputs
+        with torch.autocast(device_type=inputs.device.type, enabled=False):
+            scores = torch.softmax(scores.to(work.dtype), dim=-1).unsqueeze(1)
+            outputs = torch.matmul(scores, work).squeeze(1)
+        return outputs.to(inputs.dtype), scores.to(inputs.dtype)
 
 
 class GAMEDWithoutVeto(nn.Module):
-    def __init__(self,
-                 batch_size=64, dataset='weibo', text_token_len=197, image_token_len=197, is_use_bce=True,
-                 thresh=0.5
-                 ):
-        self.thresh = thresh
-        self.batch_size = batch_size
-        self.text_token_len, self.image_token_len = text_token_len, image_token_len
+    def __init__(self):
         model_size = 'base'
         self.model_size = model_size
-        self.dataset = dataset
-        self.LOW_BATCH_SIZE_AND_LR = ['Twitter', 'politi']
         print("Using AdaIN-based feature adjustment")
 
-        self.unified_dim, self.text_dim = 768, 768
-        self.is_use_bce = is_use_bce
-        out_dim = 1 if self.is_use_bce else 2
+        self.unified_dim = 768
+        out_dim = 1
         self.num_expert = 2
         self.depth = 1
         super(GAMEDWithoutVeto, self).__init__()
@@ -81,8 +64,6 @@ class GAMEDWithoutVeto(nn.Module):
         self.image_encoder.load_state_dict(checkpoint['model'], strict=False)
 
 
-
-        english_lists = ['gossip', 'Twitter', 'politi']
         model_name = resolve_english_encoder_path()
         print("Text encoder: ERNIE 2.0 Base (English)")
         self.text_encoder = AutoModel.from_pretrained(model_name)
@@ -90,7 +71,7 @@ class GAMEDWithoutVeto(nn.Module):
         self.t_attention = TokenAttention(self.unified_dim)
 
         from CNN_architectures.pytorch_InceptionResNetV2 import InceptionResNetV2
-        self.ip_backbone = InceptionResNetV2(num_classes=self.unified_dim, use_SRM=True).cuda()
+        self.ip_backbone = InceptionResNetV2(num_classes=self.unified_dim, use_SRM=True)
 
         self.is_attention = TokenAttention(self.unified_dim)
 
@@ -138,16 +119,6 @@ class GAMEDWithoutVeto(nn.Module):
                                      nn.Linear(self.unified_dim, self.num_expert),
                                      )
 
-        self.is_aux_gate = nn.Sequential(nn.Linear(self.unified_dim, self.unified_dim),
-                                              nn.SiLU(),
-                                              nn.Linear(self.unified_dim, self.num_expert),
-                                              )
-
-        self.t_aux_gate = nn.Sequential(nn.Linear(self.unified_dim, self.unified_dim),
-                                         nn.SiLU(),
-                                         nn.Linear(self.unified_dim, self.num_expert),
-                                         )
-
         self.fusion_attention = TokenAttention(self.unified_dim)
 
         self.fusion_gate = nn.Sequential(nn.Linear(self.unified_dim, self.unified_dim),
@@ -156,7 +127,6 @@ class GAMEDWithoutVeto(nn.Module):
                                                          )
 
         self.irrelevant_tensor = nn.Parameter(torch.ones((1,self.unified_dim)),requires_grad=True)
-
 
 
         self.mix_trim = nn.Sequential(
@@ -251,16 +221,13 @@ class GAMEDWithoutVeto(nn.Module):
 
         self.fusion_experts = nn.ModuleList(final_fusing_expert)
 
-        self.mm_score = None
-
 
     def load_state_dict(self, state_dict, strict=True, assign=False):
         """Load current or compatible checkpoint names without duplicate modules."""
         state_dict = prepare_state_dict(self, state_dict, strict=strict)
         return super().load_state_dict(state_dict, strict=strict, assign=assign)
 
-    def get_pretrain_features(self, input_ids, attention_mask, token_type_ids, image, no_ambiguity, category=None,
-                              calc_ambiguity=False):
+    def get_pretrain_features(self, input_ids, attention_mask, token_type_ids, image):
         image_feature = self.image_encoder.forward_ying(image)
         text_feature = self.text_encoder(input_ids=input_ids,
                                        attention_mask=attention_mask,
@@ -268,45 +235,9 @@ class GAMEDWithoutVeto(nn.Module):
 
         return image_feature, text_feature
     
-    def veto(outputs, mix_output, confidence_threshold=0.9):
-        """An unused veto helper; not called by this model's forward pass.
-
-        Return the average with the first opposing branch that meets the
-        confidence threshold and exceeds the mixture's maximum score; otherwise
-        return the mixture unchanged.
-        """
-        mix_decision = mix_output.argmax()
-
-        for output in outputs:
-            decision = output.argmax()
-            confidence = output.max()
-
-            if decision != mix_decision and confidence >= confidence_threshold and confidence > mix_output.max():
-                adjusted_mix_output = (mix_output + output) / 2
-                return adjusted_mix_output
-
-        return mix_output
-
-    def forward(self, input_ids, attention_mask, token_type_ids, image, no_ambiguity,
-                image_aug=None, category=None,
+    def forward(self, input_ids, attention_mask, token_type_ids, image, *,
                 calc_ambiguity=False, image_feature=None, text_feature=None,
                 return_features=False):
-
-        batch_size = image.shape[0]
-        if image_aug is None:
-            image_aug = image
-        p_1d_mm = PositionalEncoding1D(self.unified_dim)
-        x_mm = torch.rand(batch_size, self.image_token_len + self.text_token_len, self.unified_dim)
-        self.positional_mm = p_1d_mm(x_mm).cuda()
-        p_1d_image = PositionalEncoding1D(self.unified_dim)
-        x_image = torch.rand(batch_size, self.image_token_len, self.unified_dim)
-        self.positional_image = p_1d_image(x_image).cuda()
-        p_1d_text = PositionalEncoding1D(self.unified_dim)
-        x_text = torch.rand(batch_size, self.text_token_len, self.unified_dim)
-        self.positional_text = p_1d_text(x_text).cuda()
-        p_1d = PositionalEncoding1D(self.unified_dim)
-        x = torch.rand(batch_size, 5, self.unified_dim)
-        self.positional_modal_representation = p_1d(x).cuda()
 
 
         if image_feature is None:
@@ -318,6 +249,12 @@ class GAMEDWithoutVeto(nn.Module):
             text_feature = self.text_encoder(input_ids=input_ids,
                                            attention_mask=attention_mask,
                                            token_type_ids=token_type_ids)[0]
+
+        # All samples share the same positions; broadcast one encoding per sequence.
+        self.positional_image = PositionalEncoding1D(self.unified_dim).to(image_feature.device)(image_feature[:1])
+        self.positional_text = PositionalEncoding1D(self.unified_dim).to(text_feature.device)(text_feature[:1])
+        mm_tokens = torch.cat((image_feature, text_feature), dim=1)
+        self.positional_mm = PositionalEncoding1D(self.unified_dim).to(mm_tokens.device)(mm_tokens[:1])
 
         text_atn_feature, _ = self.t_attention(text_feature)
 
@@ -332,7 +269,7 @@ class GAMEDWithoutVeto(nn.Module):
         mm_aux_gate_weights = self.mm_aux_gate(mm_atn_feature)
 
 
-        is_feature, is_aux_feature = 0, 0
+        is_feature = 0
         for i in range(self.num_expert):
             is_expert = self.is_experts[i]
             tmp_image_feature = image_feature
@@ -341,7 +278,7 @@ class GAMEDWithoutVeto(nn.Module):
             is_feature += (tmp_image_feature * is_gate_weights[:, i].unsqueeze(1).unsqueeze(1))
         is_feature = is_feature[:, 0]
 
-        t_feature, t_aux_feature = 0, 0
+        t_feature = 0
         for i in range(self.num_expert):
             t_expert = self.t_experts[i]
             tmp_text_feature = text_feature
@@ -363,8 +300,6 @@ class GAMEDWithoutVeto(nn.Module):
         mm_consistency_feature = mm_consistency_feature[:, 0]
 
 
-
-
         mm_aux_feature = self.mm_aux_trim(mm_consistency_feature)
         mm_aux_output = self.mm_aux_classifier(mm_aux_feature)
 
@@ -379,19 +314,18 @@ class GAMEDWithoutVeto(nn.Module):
         is_output = self.is_classifier(is_feature_lite)
         t_output = self.t_classifier(t_feature_lite)
 
-        irrelevance_score = 1 - torch.sigmoid(mm_aux_output).clone().detach()
+        irrelevance_score = 1 - torch.sigmoid(mm_aux_output).clone()
         is_mu = self.is_adain_mu(torch.sigmoid(is_output).clone().detach())
         t_mu = self.t_adain_mu(torch.sigmoid(t_output).clone().detach())
         ip_mu = self.ip_adain_mu(torch.sigmoid(ip_output).clone().detach())
-        irrelevant_mu = self.irrelevant_adain_mu(irrelevance_score.clone().detach())
+        irrelevant_mu = self.irrelevant_adain_mu(irrelevance_score.clone())
         is_sigma = self.is_adain_sigma(torch.sigmoid(is_output).clone().detach())
         t_sigma = self.t_adain_sigma(torch.sigmoid(t_output).clone().detach())
         ip_sigma = self.ip_adain_sigma(torch.sigmoid(ip_output).clone().detach())
-        irrelevant_sigma = self.irrelevant_adain_sigma(irrelevance_score.clone().detach())
+        irrelevant_sigma = self.irrelevant_adain_sigma(irrelevance_score.clone())
 
         is_feature = self.adaIN(is_feature,is_mu,is_sigma)
         t_feature = self.adaIN(t_feature,t_mu,t_sigma)
-        shared_mm_feature = shared_mm_feature
         ip_feature = self.adaIN(ip_feature,ip_mu,ip_sigma)
         irrelevant_feature = torch.ones_like(shared_mm_feature)*self.irrelevant_tensor
         irrelevant_token = self.adaIN(irrelevant_feature,irrelevant_mu,irrelevant_sigma)
@@ -403,6 +337,7 @@ class GAMEDWithoutVeto(nn.Module):
                                                   ), dim=1)
 
 
+        self.positional_modal_representation = PositionalEncoding1D(self.unified_dim).to(fusion_tokens.device)(fusion_tokens[:1])
         fusion_attention_feature, _ = self.fusion_attention(fusion_tokens)
         fusion_gate_weights = self.fusion_gate(fusion_attention_feature)
 
@@ -424,11 +359,3 @@ class GAMEDWithoutVeto(nn.Module):
 
         return mix_output, is_output, t_output, ip_output, mm_aux_output, \
                torch.mean(self.irrelevant_tensor)
-
-    def mapping(self, score):
-        diff_with_thresh = torch.abs(score-self.thresh)
-        interval = torch.where(score-self.thresh>0, 1-self.thresh, self.thresh)
-        return diff_with_thresh/interval
-
-
-

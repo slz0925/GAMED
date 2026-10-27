@@ -1,5 +1,5 @@
-# Recorded GAMED dependency versions; not a fully resolved environment lock.
-# See docs/ENVIRONMENT.md for platform and test coverage.
+# GAMED training and validation dependencies.
+# See docs/ENVIRONMENT.md for platform requirements.
 torch==2.2.2
 torchvision==0.17.2
 numpy==1.26.4

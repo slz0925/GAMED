@@ -31,9 +31,8 @@ Append optional entry arguments such as `-batch_size`, `-epochs`, `-device` and
 training/validation mode; use `run_gamed.py` directly for other selections.
 Training scripts use `-val 0`; validation scripts use `-val 1`. Each fixes both
 dataset selectors to its named dataset and selects `gamed`. User arguments cannot
-override these selectors. Validation uses the validation dataset, still constructs
-the training loader, and exports features/results and saves a state dict; prepare
-both training and validation resources. See [REPRODUCE.md](../docs/REPRODUCE.md)
+override these selectors. Validation loads only the validation dataset, exports features/results and saves
+a state dict; no training table is required. See [REPRODUCE.md](../docs/REPRODUCE.md)
 for output paths and evaluation behaviour. `-output_file` sets the common output
 root for checkpoints, features and predictions; each invocation creates a new run
 directory. Use `bash scripts/validate_yang.sh --help` (or any of the other scripts)

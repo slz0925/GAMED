@@ -25,6 +25,16 @@ MODULE_NAMES = {
 }
 
 
+UNUSED_GATE_SHAPES = {
+    f'{root}.{layer}.{name}': shape
+    for root in ('is_aux_gate', 't_aux_gate')
+    for layer, name, shape in (
+        (0, 'weight', (768, 768)), (0, 'bias', (768,)),
+        (2, 'weight', (2, 768)), (2, 'bias', (2,)),
+    )
+}
+
+
 def canonical_key(key):
     """Map a root module name, preserving every descendant component."""
     if not isinstance(key, str):
@@ -65,6 +75,17 @@ def prepare_state_dict(model, state_dict, strict=True):
     """
     converted = remap_state_dict(state_dict)
     expected = model.state_dict()
+    for key, shape in UNUSED_GATE_SHAPES.items():
+        if key in converted and key not in expected:
+            value = converted[key]
+            if not hasattr(value, 'shape') or tuple(value.shape) != shape:
+                raise RuntimeError('Checkpoint tensor shape mismatch: ' + key)
+            del converted[key]
+    if hasattr(converted, '_metadata'):
+        converted._metadata = OrderedDict(
+            (key, value) for key, value in converted._metadata.items()
+            if key.split('.')[0] not in ('is_aux_gate', 't_aux_gate')
+            or key.split('.')[0] in model._modules)
     missing = sorted(set(expected) - set(converted))
     unexpected = sorted(set(converted) - set(expected))
     incompatible = []

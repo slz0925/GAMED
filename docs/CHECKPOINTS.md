@@ -30,18 +30,18 @@ special_tokens_map.json
 ```
 
 `AutoModel` and `AutoTokenizer` use the same directory resolver. Explicit
-`prefix_map` entries take precedence over `resource_root`; if both legacy and
-repository-relative entries match, the legacy mapping is used. Without a mapping,
-the repository-relative
-directory is used, with an existing legacy installation as a fallback.
+`prefix_map` entries take precedence over `resource_root`. Without a mapping,
+the repository-relative directory is used.
 If using a Hugging Face cache,
 copy the complete snapshot contents into this location, including the actual
 weight file; a cache container containing only `blobs/`, `refs/` and `snapshots/`
 is not the expected layout. Chinese ERNIE1 is not required.
 
-The [resource manifest](../resources/manifest.json) identifies the input versions
-used by this code. It does not verify downloads automatically. Preserve the
-applicable component licences when obtaining or redistributing weights.
+The [resource manifest](../resources/manifest.json) records reference file sizes
+and SHA-256 checksums for MAE, ERNIE and its tokeniser. Loading does not verify
+these checksums. Alternative exports must preserve model and tokeniser
+compatibility; record their source and version. Preserve the applicable component
+licences when obtaining or redistributing weights.
 
 ## Trained GAMED weights
 
@@ -53,7 +53,7 @@ Both [validation scripts](../scripts/README.md), `validate_yang.sh` and
 before model initialisation. `--help` needs no checkpoint. The Python entry retains
 its optional checkpoint interface.
 
-Model construction still loads MAE and English ERNIE before the GAMED state dict.
+Model construction loads MAE and English ERNIE before the GAMED state dict.
 The IP branch constructs IRNv2 without separately loading ImageNet weights;
 see [MODEL_MAP.md](MODEL_MAP.md).
 
@@ -64,11 +64,15 @@ including an optional `module.` prefix. Both model variants also support this
 mapping through `load_state_dict`. Loading is strict by default: missing keys,
 unexpected keys, conflicting aliases and shape mismatches raise an error.
 Explicit `strict=False` permits partial loading with a warning listing missing
-and unexpected keys; collisions and shape mismatches still fail. New saves use
-the current names. No manual checkpoint conversion is required.
+and unexpected keys; collisions and shape mismatches still fail. When loading
+older state dicts, only the eight IS/T auxiliary gate tensors with their expected
+shapes are discarded. Saved state dicts use the registered module names.
 This repository saves state dicts, not whole-model Python pickle objects.
-New checkpoints are written to the current run's `checkpoints/epoch_<number>.pkl`;
+Weights are deserialised on CPU and copied into the model's current device.
+For direct model use, move the complete model and inputs to the same device with
+`model.to(device)`.
+Checkpoints are written to the current run's `checkpoints/epoch_<number>.pkl`;
 the parent directories identify both datasets, the model and the run. Loading uses
-the supplied path and state-dict keys, not the checkpoint filename. Existing
-checkpoint filenames remain valid. See [REPRODUCE.md](REPRODUCE.md) for the output
+the supplied path and state-dict keys, not the checkpoint filename.
+See [REPRODUCE.md](REPRODUCE.md) for the output
 layout and validation behaviour.

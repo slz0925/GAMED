@@ -1,34 +1,8 @@
 from __future__ import print_function, division, absolute_import
 import torch
 import torch.nn as nn
-import torch.utils.model_zoo as model_zoo
-import os
-import sys
 import torch.nn.functional as F
-__all__ = ['InceptionResNetV2', 'inceptionresnetv2']
-import numpy as np
-pretrained_settings = {
-    'inceptionresnetv2': {
-        'imagenet': {
-            'url': 'http://data.lip6.fr/cadene/pretrainedmodels/inceptionresnetv2-520b38e4.pth',
-            'input_space': 'RGB',
-            'input_size': [3, 299, 299],
-            'input_range': [0, 1],
-            'mean': [0.5, 0.5, 0.5],
-            'std': [0.5, 0.5, 0.5],
-            'num_classes': 1000
-        },
-        'imagenet+background': {
-            'url': 'http://data.lip6.fr/cadene/pretrainedmodels/inceptionresnetv2-520b38e4.pth',
-            'input_space': 'RGB',
-            'input_size': [3, 299, 299],
-            'input_range': [0, 1],
-            'mean': [0.5, 0.5, 0.5],
-            'std': [0.5, 0.5, 0.5],
-            'num_classes': 1001
-        }
-    }
-}
+__all__ = ['InceptionResNetV2']
 
 
 class BasicConv2d(nn.Module):
@@ -37,7 +11,7 @@ class BasicConv2d(nn.Module):
         super(BasicConv2d, self).__init__()
         self.conv = nn.Conv2d(in_planes, out_planes,
                               kernel_size=kernel_size, stride=stride,
-                              padding=padding, bias=False) # verify bias false
+                              padding=padding, bias=False)
         self.bn = nn.BatchNorm2d(out_planes,
                                  eps=0.001, # value found in tensorflow
                                  momentum=0.1, # default pytorch value
@@ -240,10 +214,12 @@ class InceptionResNetV2(nn.Module):
             print("Using Bayar filtering in InceptionResNetV2")
             ## bayar conv
             self.BayarConv2D = nn.Conv2d(3, 3, 5, 1, padding=2, bias=False)
-            self.bayar_mask = (torch.tensor(np.ones(shape=(5, 5)))).cuda()
-            self.bayar_mask[2, 2] = 0
-            self.bayar_final = (torch.tensor(np.zeros((5, 5)))).cuda()
-            self.bayar_final[2, 2] = -1        
+            mask = self.BayarConv2D.weight.new_ones(5, 5)
+            mask[2, 2] = 0
+            centre = self.BayarConv2D.weight.new_zeros(5, 5)
+            centre[2, 2] = -1
+            self.register_buffer('bayar_mask', mask, persistent=False)
+            self.register_buffer('bayar_final', centre, persistent=False)
         # Special attributes
         self.input_space = None
         self.input_size = (299, 299, 3)
@@ -336,10 +312,22 @@ class InceptionResNetV2(nn.Module):
 
     def forward(self, input):
         if self.use_SRM:
-            self.BayarConv2D.weight.data *= self.bayar_mask
-            self.BayarConv2D.weight.data *= torch.pow(self.BayarConv2D.weight.data.sum(axis=(2, 3)).view(3, 3, 1, 1),-1)
-            self.BayarConv2D.weight.data += self.bayar_final
-            conv_bayar = self.BayarConv2D(input)
+            # Project the filter before convolution, retaining projected SGD.
+            with torch.no_grad():
+                weight = self.BayarConv2D.weight
+                work = weight.float() if weight.dtype in (torch.float16, torch.bfloat16) else weight
+                off_centre = work * self.bayar_mask
+                total = off_centre.sum(dim=(2, 3), keepdim=True)
+                tolerance = torch.finfo(work.dtype).eps * off_centre.abs().sum(dim=(2, 3), keepdim=True).clamp_min(1)
+                regular = total.abs() > tolerance
+                divisor = torch.where(regular, total, torch.ones_like(total))
+                projected = torch.where(regular, off_centre / divisor,
+                                        self.bayar_mask / self.bayar_mask.sum())
+                weight.copy_((projected + self.bayar_final).to(weight.dtype))
+            # A snapshot protects saved tensors across multiple pending forwards.
+            conv_bayar = F.conv2d(input, weight.clone(), self.BayarConv2D.bias,
+                                  self.BayarConv2D.stride, self.BayarConv2D.padding,
+                                  self.BayarConv2D.dilation, self.BayarConv2D.groups)
             input = conv_bayar        
         input = F.interpolate(input, size=(299, 299), mode="bicubic", align_corners=False)
         x = self.features(input)

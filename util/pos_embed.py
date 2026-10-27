@@ -1,8 +1,9 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
+# This source code is licensed under CC BY-NC 4.0; see
+# third_party/licenses/MAE-CC-BY-NC-4.0.txt in this repository.
+# Modified to use an explicit NumPy float64 dtype for positional frequencies.
 # --------------------------------------------------------
 # Position embedding utils
 # --------------------------------------------------------

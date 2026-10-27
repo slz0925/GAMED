@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "description": "Required tables and initialisation files for the supported GAMED paths. Paths are relative to resource_root. Hashes identify the input files; they do not certify paper-result reproduction. Images and user-trained GAMED checkpoints are supplied separately.",
+  "description": "Reference tables and initialisation files for GAMED, with paths relative to resource_root. Sizes and SHA-256 checksums identify the reference files and are not verified during loading. Images and trained GAMED checkpoints are supplied separately.",
   "files": [
     {
       "source": "checkpoint/mae_pretrain_vit_base.pth",

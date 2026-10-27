@@ -1,15 +1,24 @@
 """GAMED training and validation for Fakeddit and Yang."""
 import argparse
-import datetime
+import json
 import os
+import re
 from pathlib import Path
-import sys
 from output_paths import create_run_directory, create_epoch_directory
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 GT_size = 224
 word_token_length = 197
-image_token_length = 197
+
+
+def _non_negative_int(value):
+    try:
+        number = int(value)
+        if number < 0:
+            raise ValueError
+    except ValueError:
+        raise argparse.ArgumentTypeError('must be a non-negative integer') from None
+    return number
 
 
 def build_parser():
@@ -21,12 +30,10 @@ def build_parser():
     parser.add_argument('-checkpoint', default='')
     parser.add_argument('-finetune', type=int, default=0)
     parser.add_argument('-val', type=int, default=0)
-    parser.add_argument('-is_filter', type=int, default=0, help=argparse.SUPPRESS)
-    parser.add_argument('-duplicate_fake_times', type=int, default=0, help=argparse.SUPPRESS)
-    parser.add_argument('-is_sample_positive', type=float, default=1.0, help=argparse.SUPPRESS)
     parser.add_argument('-batch_size', type=int, default=16)
+    parser.add_argument('-train_workers', type=_non_negative_int, default=56, help='Training DataLoader workers')
+    parser.add_argument('-val_workers', type=_non_negative_int, default=32, help='Validation DataLoader workers')
     parser.add_argument('-epochs', type=int, default=100)
-    parser.add_argument('-not_on_12', type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument('-device', type=int, default=0, help='CUDA device index')
     return parser
 
@@ -37,24 +44,17 @@ def validate_arguments(arguments):
 
 
 def initialise_runtime():
-    """Load runtime dependencies and the English tokenizer before research seeding.
-
-    Importing this entry, requesting help or rejecting invalid CLI values does
-    not load frameworks, tokenizers, data or weights.
-    """
-    global _read_path, np, torch, nn, Variable, DataLoader, warmup
+    """Load runtime dependencies and the English tokenizer before setting the seed."""
+    global _read_path, np, torch, nn, DataLoader
     global AutoTokenizer, ImageFile, token_uncased_fakeddit, Progbar
     from resource_paths import resolve_read_path as _read_path, resolve_english_encoder_path
     import numpy as np
     import torch
     import torch.nn as nn
-    from torch.autograd import Variable
     from torch.utils.data import DataLoader
     from transformers import AutoTokenizer
-    # Preserve MAE/timm/torchvision import initialisation before research seeding.
-    # The entry does not otherwise read this binding; the model uses the cache.
+    # Load backbone dependencies before setting the experiment seed.
     import models_mae
-    import pytorch_warmup as warmup
     from PIL import ImageFile
     ImageFile.LOAD_TRUNCATED_IMAGES = True
     token_uncased_fakeddit = AutoTokenizer.from_pretrained(resolve_english_encoder_path())
@@ -80,55 +80,33 @@ def cli(arguments=None):
     main(args)
 
 
-def to_var(x):
+def to_var(x, device=None):
     
-    if torch.cuda.is_available():
-        x = x.cuda()
-    return Variable(x)
+    if device is None:
+        device = torch.device('cuda') if torch.cuda.is_available() else x.device
+    x = x.to(device)
+    return x
 
 
-def to_np(x):
-    return x.data.cpu().numpy()
+def collate_news_batch(data):
+    """Tokenise each news batch once and preserve its sample order."""
+    sentences, images, labels, image_paths = zip(*data)
+    tokens = token_uncased_fakeddit(
+        list(sentences), return_tensors='pt', truncation=True,
+        padding='max_length', max_length=word_token_length)
+    text = tuple(tokens[name] for name in ('input_ids', 'attention_mask', 'token_type_ids'))
+    return text, (torch.stack(images), torch.tensor(labels, dtype=torch.long), list(sentences)), list(image_paths)
 
 
-def collate_fn_english_fakeddit(data):
-    item = data[0]
-    sents = [i[0][0] for i in data]
-    image = [i[1][0] for i in data]
-    image_aug = [torch.tensor(i[1][1]) for i in data]
-    labels = [i[1][2] for i in data]
-    category = [0 for i in data]
-    GT_path = [i[2] for i in data]
-    token_data = token_uncased_fakeddit(sents,return_tensors='pt',truncation=True,return_length=True,padding='max_length',max_length=word_token_length)
-    
-    input_ids = token_data['input_ids']
-    attention_mask = token_data['attention_mask']
-    token_type_ids = token_data['token_type_ids']
-    image = torch.stack(image)
-    image_aug = torch.stack(image_aug)
-    labels = torch.LongTensor(labels)
-    category = torch.LongTensor(category)
-
-    if len(item) <= 2:
-        return (input_ids, attention_mask, token_type_ids), (image, image_aug, labels, category, sents), GT_path
+def load_dataset(name, mode):
+    if name == 'fakeddit':
+        from data.Fakeddit_dataset import Fakeddit_dataset as Dataset
+    elif name == 'yang':
+        from data.Yang_dataset import Yang_dataset as Dataset
     else:
-        sents1 = [i[0][0] for i in data]
-        image1 = [i[1][0] for i in data]
-        labels1 = [i[1][2] for i in data]
-        token_data1 = token_uncased_fakeddit(sents1,return_tensors='pt',return_length=True,padding='max_length',max_length=word_token_length,truncation=True,)
+        raise ValueError('Unsupported dataset: ' + str(name))
+    return Dataset(root_path=PROJECT_ROOT / 'dataset', mode=mode, image_size=GT_size)
 
-        input_ids1 = token_data1['input_ids']
-        attention_mask1 = token_data1['attention_mask']
-        token_type_ids1 = token_data1['token_type_ids']
-        image1 = torch.stack(image1)
-        labels1 = torch.LongTensor(labels1)
-
-        return (input_ids, attention_mask, token_type_ids), (image, image_aug, labels, category, sents), GT_path, \
-               (input_ids1, attention_mask1, token_type_ids1), (image1, labels1, sents1)
-
-
-stateful_metrics = ['L-RealTime','lr','APEXGT','empty','exclusion','FW1', 'QF','QFGT','QFR','BK1', 'FW', 'BK','FW1', 'BK1', 'LC', 'Kind',
-                                'FAB1','BAB1','A', 'AGT','1','2','3','4','0','gt','pred','RATE','SSBK']
 
 def get_parameter_number(net):
     total_num = sum(p.numel() for p in net.parameters())
@@ -137,8 +115,6 @@ def get_parameter_number(net):
 
 def main(args):
     print(args)
-
-
     seed = 25
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -147,507 +123,280 @@ def main(args):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = False
     torch.backends.cudnn.benchmark = True
-    print("Initialising CUDA AMP gradient scaler")
-    scaler = torch.cuda.amp.GradScaler()
 
-    print('loading data')
-    setting = {}
-    setting['checkpoint_path'] = args.checkpoint
-    print('loading checkpoint from {}'.format(setting['checkpoint_path']))
-    setting['train_dataname'] = args.train_dataset
-    setting['val_dataname'] = args.test_dataset
-    setting['val'] = args.val
-    setting['network_arch'] = args.network_arch
-    setting['is_filter'] = args.is_filter>0
-    setting['duplicate_fake_times'] = args.duplicate_fake_times
-    setting['is_use_unimodal'] = True
-    setting['with_ambiguity'] = False
-    setting['data_augment'] = False
-    setting['not_on_12'] = args.not_on_12
-    setting['is_use_bce'] = True
-    setting['use_soft_label'] = False
-    setting['is_sample_positive'] = args.is_sample_positive
-    setting['thresh'] = 0.5
-
-    custom_batch_size = args.batch_size
-    custom_num_epochs = args.epochs
-    print("Compatibility filter flag (unused by supported loaders): {}".format(setting['is_filter']))
-    train_dataset, validate_dataset, train_loader, validate_loader = None,None,None,None
-    train_sampler = None
-
-
-    if setting['train_dataname']=="fakeddit":
-        from data.Fakeddit_dataset import Fakeddit_dataset
-        NUM_WORKER = 56
-        dataset_dir = 'dataset'
-        train_dataset = Fakeddit_dataset(root_path=os.path.join(os.getcwd(), dataset_dir), mode = 'train', image_size=GT_size)
+    training = args.val == 0
+    if training:
+        train_dataset = load_dataset(args.train_dataset, 'train')
         train_loader = DataLoader(
-            train_dataset,
-            batch_size=custom_batch_size,
-            num_workers=NUM_WORKER,
-            shuffle=True,collate_fn = collate_fn_english_fakeddit,)
-        print(f"thresh:{setting['thresh']}")
+            train_dataset, batch_size=args.batch_size, num_workers=args.train_workers,
+            shuffle=True, collate_fn=collate_news_batch)
+    validate_dataset = load_dataset(args.test_dataset, 'validate')
+    validate_loader = DataLoader(
+        validate_dataset, batch_size=args.batch_size, shuffle=False,
+        collate_fn=collate_news_batch, num_workers=args.val_workers, drop_last=False,
+        pin_memory=True)
 
-    elif setting['train_dataname']=="yang":
-        from data.Yang_dataset import Yang_dataset
-        NUM_WORKER = 56
-        dataset_dir = 'dataset'
-        train_dataset = Yang_dataset(root_path=os.path.join(os.getcwd(), dataset_dir), mode = 'train', image_size=GT_size)
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=custom_batch_size,
-            num_workers=NUM_WORKER,
-            shuffle=True,collate_fn = collate_fn_english_fakeddit,)
-        print(f"thresh:{setting['thresh']}")
-    else:
-        raise ValueError("Unsupported dataset")
-
-    if setting['val_dataname']=='fakeddit':
-        print("Preparing Fakeddit validation data")
-        from data.Fakeddit_dataset import Fakeddit_dataset
-        dataset_dir = 'dataset'
-        validate_dataset = Fakeddit_dataset(root_path=os.path.join(os.getcwd(), dataset_dir), mode = 'validate',
-            is_train=False, image_size=GT_size,
-        )
-        validate_loader = DataLoader(validate_dataset, batch_size=custom_batch_size, shuffle=False,
-                                     collate_fn = collate_fn_english_fakeddit,
-                                     num_workers=32, sampler=None, drop_last=False,
-                                     pin_memory=True)
-    elif setting['val_dataname']=='yang':
-        print("Preparing Yang validation data")
-        from data.Yang_dataset import Yang_dataset
-        dataset_dir = 'dataset'
-        validate_dataset = Yang_dataset(root_path=os.path.join(os.getcwd(), dataset_dir), mode = 'validate',
-            is_train=False, image_size=GT_size,
-        )
-        validate_loader = DataLoader(validate_dataset, batch_size=custom_batch_size, shuffle=False,
-                                     collate_fn = collate_fn_english_fakeddit,
-                                     num_workers=32, sampler=None, drop_last=False,
-                                     pin_memory=True)        
-    else:
-        raise ValueError("Unsupported dataset")
-
-    print('building model')
-    model_type = resolve_model_class(setting['network_arch'])
-    print(f"Network {setting['network_arch']}")
-    model = model_type(dataset=setting['train_dataname'],
-                      text_token_len=word_token_length,
-                      image_token_len=image_token_length,
-                      is_use_bce=setting['is_use_bce'],
-                      batch_size=custom_batch_size,
-                      thresh=setting['thresh'],
-                      )
-
-    if len(setting['checkpoint_path'])!=0:
-        print("loading checkpoint: {}".format(setting['checkpoint_path']))
-        load_model(model, setting['checkpoint_path'])
-    model = model.cuda()
-    model.train()
-
+    model_type = resolve_model_class(args.network_arch)
+    model = model_type()
+    if args.checkpoint:
+        print('Loading checkpoint: ' + args.checkpoint)
+        load_model(model, args.checkpoint)
+    device = torch.device('cuda', args.device)
+    model = model.to(device)
     print(get_parameter_number(model))
-    loss_cross_entropy = nn.CrossEntropyLoss().cuda()
-    loss_bce = nn.BCEWithLogitsLoss().cuda()
-    criterion = loss_bce
-    l1_loss = nn.L1Loss().cuda()
-    optim_params_normal, optim_params_fast, optim_params_extremefast = [], [], []
-    name_params_normal, name_params_fast, name_params_extremefast = [], [], []
-    for k, v in model.named_parameters():
-        if v.requires_grad:
-            if "image_encoder" in k or "text_encoder" in k:
-                name_params_normal.append(k)
-                optim_params_normal.append(v)
-            elif "ip_backbone" in k or "irrelevant_tensor" in k:
-                name_params_extremefast.append(k)
-                optim_params_extremefast.append(v)
-            else:
-                name_params_fast.append(k)
-                optim_params_fast.append(v)
-    fine_tuning = args.finetune>0
-    print(f"Fine-tuning mode: {fine_tuning}")
-    optimizer = torch.optim.AdamW(optim_params_normal,
-                                 lr=1e-5,betas=(0.9, 0.999), weight_decay=0.01)
-    optimizer_fast = torch.optim.AdamW(optim_params_fast,
-                                  lr=5e-5 if not fine_tuning>0 else 1e-5, betas=(0.9, 0.999), weight_decay=0.01)
-    optimizer_extremefast = torch.optim.AdamW(optim_params_extremefast,
-                                       lr=1e-4 if not fine_tuning else 1e-5, betas=(0.9, 0.999), weight_decay=0.01)
-    num_steps = int(len(train_loader) * custom_num_epochs * 1.1)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_steps)
-    warmup_scheduler = warmup.UntunedLinearWarmup(optimizer)
-    scheduler_fast = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_fast, T_max=num_steps)
-    warmup_scheduler_fast = warmup.UntunedLinearWarmup(optimizer_fast)
-    scheduler_extremefast = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_extremefast, T_max=num_steps)
-    warmup_scheduler_extremefast = warmup.UntunedLinearWarmup(optimizer_extremefast)
-    print("Using CosineAnnealingLR+UntunedLinearWarmup")
+    criterion = nn.BCEWithLogitsLoss().to(device)
 
-    print("loader size " + str(len(train_loader)))
-    best_validate_acc = 0.000
-    best_acc_so_far = 0.000
-    best_epoch_record = 0
-    global_step = 0
-    print('Starting training or validation')
+    if training:
+        import pytorch_warmup as warmup
+        optim_params_normal, optim_params_fast, optim_params_extremefast = [], [], []
+        for name, parameter in model.named_parameters():
+            if parameter.requires_grad:
+                if 'image_encoder' in name or 'text_encoder' in name:
+                    optim_params_normal.append(parameter)
+                elif 'ip_backbone' in name or 'irrelevant_tensor' in name:
+                    optim_params_extremefast.append(parameter)
+                else:
+                    optim_params_fast.append(parameter)
+        fine_tuning = args.finetune > 0
+        optimizer = torch.optim.AdamW(optim_params_normal, lr=1e-5,
+                                     betas=(0.9, 0.999), weight_decay=0.01)
+        optimizer_fast = torch.optim.AdamW(optim_params_fast,
+                                          lr=1e-5 if fine_tuning else 5e-5,
+                                          betas=(0.9, 0.999), weight_decay=0.01)
+        optimizer_extremefast = torch.optim.AdamW(optim_params_extremefast,
+                                                 lr=1e-5 if fine_tuning else 1e-4,
+                                                 betas=(0.9, 0.999), weight_decay=0.01)
+        num_steps = int(len(train_loader) * args.epochs * 1.1)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_steps)
+        warmup_scheduler = warmup.UntunedLinearWarmup(optimizer)
+        scheduler_fast = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_fast, T_max=num_steps)
+        warmup_scheduler_fast = warmup.UntunedLinearWarmup(optimizer_fast)
+        scheduler_extremefast = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_extremefast, T_max=num_steps)
+        warmup_scheduler_extremefast = warmup.UntunedLinearWarmup(optimizer_extremefast)
 
-
-    if setting['val']!=0:
-        custom_num_epochs = 1
-
-    run_directory = create_run_directory(args.output_file, args.train_dataset, args.test_dataset, args.network_arch, validation=args.val != 0)
-
-    for epoch in range(custom_num_epochs):
-        cost_vector = []
-        acc_vector = []
-        if setting['val']==0:
-            total = len(train_dataset)
-            progbar = Progbar(total, width=10, stateful_metrics=stateful_metrics)
-            for i, items in enumerate(train_loader):
-
+    run_directory = create_run_directory(
+        args.output_file, args.train_dataset, args.test_dataset,
+        args.network_arch, validation=not training)
+    best_acc_so_far, best_epoch_record = 0.0, 0
+    validation_setting = {'thresh': 0.5}
+    for epoch in range(args.epochs if training else 1):
+        if training:
+            loss_total, correct_total, sample_total = 0.0, 0, 0
+            progbar = Progbar(len(train_dataset), width=10)
+            model.train()
+            for texts, (image, labels, _), _ in train_loader:
+                optimizer.zero_grad(set_to_none=True)
+                optimizer_fast.zero_grad(set_to_none=True)
+                optimizer_extremefast.zero_grad(set_to_none=True)
                 with torch.enable_grad():
-                    logs = []
-                    model.train()
-
-                    if setting['with_ambiguity']:
-                        """
-                        (input_ids, attention_mask, token_type_ids), (image, labels, category, sents), GT_path, 
-               (input_ids1, attention_mask1, token_type_ids1), (image1, labels1, sents1)
-                        """
-                        texts, others, GT_path, texts1, others1 = items
-                        input_ids, attention_mask, token_type_ids = texts
-                        input_ids1, attention_mask1, token_type_ids1 = texts1
-                        image, image_aug, labels, category, sents = others
-                        image1, labels1, sents1 = others1
-                        input_ids, attention_mask, token_type_ids, image, image_aug, labels, category = \
-                            to_var(input_ids), to_var(attention_mask), to_var(token_type_ids), \
-                            to_var(image), to_var(image_aug), to_var(labels), to_var(category)
-                        input_ids1, attention_mask1, token_type_ids1, image1, labels1 = \
-                            to_var(input_ids1), to_var(attention_mask1), to_var(token_type_ids1), \
-                            to_var(image1), to_var(labels1)
-                    else:
-                        """
-                        (input_ids, attention_mask, token_type_ids), (image, labels, category, sents)
-                        """
-                        texts, others, GT_path, _, _ = items
-                        input_ids, attention_mask, token_type_ids = texts
-                        image, image_aug, labels, category, sents = others
-                        input_ids, attention_mask, token_type_ids, image, image_aug, labels, category = \
-                             to_var(input_ids),to_var(attention_mask), to_var(token_type_ids), \
-                            to_var(image), to_var(image_aug), to_var(labels), to_var(category)
-
-                    loss_ambiguity = 0
-                    if setting['with_ambiguity']:
-                        mm_aux_output, *_ = model(input_ids=input_ids1, 
-                                          attention_mask=attention_mask1,
-                                          token_type_ids=token_type_ids1,
-                                          image=image1,
-                                         no_ambiguity=False,
-                                          category=torch.zeros_like(category),
-                                         calc_ambiguity=True,
-                                         )
-                        loss_ambiguity += criterion(mm_aux_output,labels1.float().unsqueeze(1))
-                        logs.append(('MM_ambiguity_loss', loss_ambiguity.item()))
-
-
-                    mix_output, is_output, t_output, ip_output, mm_aux_output, irrelevant_mean = model(input_ids=input_ids,
-                                          attention_mask=attention_mask,
-                                          token_type_ids=token_type_ids,
-                                          image=image,
-                                          image_aug=image_aug,
-                                          no_ambiguity=not setting['with_ambiguity'],
-                                          category=category,
-                                          calc_ambiguity=False,
-                                      )
-
-                    if setting['is_use_bce']:
-                        labels = labels.float().unsqueeze(1)
-
+                    input_ids, attention_mask, token_type_ids = (
+                        to_var(value, device=device) for value in texts)
+                    image, labels = to_var(image, device=device), to_var(labels, device=device)
+                    outputs = model(input_ids=input_ids, attention_mask=attention_mask,
+                                    token_type_ids=token_type_ids, image=image)
+                    mix_output, is_output, t_output, ip_output, mm_aux_output, irrelevant_mean = outputs
+                    labels = labels.float().unsqueeze(1)
                     mix_loss = criterion(mix_output, labels)
                     is_loss = criterion(is_output, labels)
                     t_loss = criterion(t_output, labels)
                     ip_loss = criterion(ip_output, labels)
-                    loss_single_modal = (ip_loss+t_loss+is_loss)/3
-                    loss = mix_loss+2.0*loss_ambiguity+1.0*loss_single_modal
+                    loss_single_modal = (ip_loss + t_loss + is_loss) / 3
+                    loss = mix_loss + loss_single_modal
 
-                    global_step += 1
-
-                    optimizer.zero_grad()
-                    optimizer_fast.zero_grad()
-                    optimizer_extremefast.zero_grad()
                     loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), max_norm=1)
-                    cvt = 6
-                    if epoch>=cvt:
+                    parameters_to_clip = (
+                        model.parameters() if epoch >= 6
+                        else optim_params_fast + optim_params_extremefast
+                    )
+                    nn.utils.clip_grad_norm_(parameters_to_clip, max_norm=1)
+                    if epoch >= 6:
                         optimizer.step()
                     optimizer_fast.step()
                     optimizer_extremefast.step()
 
-                    logs.append(('Mix_loss',mix_loss.item()))
-                    logs.append(('IS_loss', is_loss.item()))
-                    logs.append(('T_loss', t_loss.item()))
-                    logs.append(('IP_loss', ip_loss.item()))
-                    logs.append(('MM_mean_prob', torch.mean(torch.sigmoid(mm_aux_output)).item()))
-                    logs.append(('Irr_mean', irrelevant_mean.item()))
-                    if not setting['is_use_bce']:
-                        _, argmax = torch.max(mix_output, 1)
-                        accuracy = (labels == argmax.squeeze()).float().mean()
-                    else:
-                        accuracy = (torch.sigmoid(mix_output).round_() == labels.round_()).float().mean()
-
-                    cost_vector.append(loss.item())
-                    acc_vector.append(accuracy.item())
-                    mean_cost, mean_acc = np.mean(cost_vector), np.mean(acc_vector)
-                    logs.append(('Train_acc', mean_acc))
-                    if model.mm_score is not None:
-                        mean_mm_score = torch.mean(model.mm_score).item()
-                        logs.append(('mm_score', mean_mm_score))
-                        mean_text_score = torch.mean(model.text_score).item()
-                        logs.append(('text_score', mean_text_score))
-                        mean_image_score = torch.mean(model.image_score).item()
-                        logs.append(('image_score', mean_image_score))
-                    progbar.add(len(image), values=logs)
-                    if epoch>=cvt:
+                    batch_size = len(image)
+                    correct = ((torch.sigmoid(mix_output) >= 0.5) == labels).sum().item()
+                    loss_total += loss.item() * batch_size
+                    correct_total += correct
+                    sample_total += batch_size
+                    logs = [('Mix_loss', mix_loss.item()), ('IS_loss', is_loss.item()),
+                            ('T_loss', t_loss.item()), ('IP_loss', ip_loss.item()),
+                            ('MM_mean_prob', torch.sigmoid(mm_aux_output).mean().item()),
+                            ('Irr_mean', irrelevant_mean.item()), ('Train_acc', correct / batch_size)]
+                    progbar.add(batch_size, values=logs)
+                    if epoch >= 6:
                         with warmup_scheduler.dampening():
                             scheduler.step()
                     with warmup_scheduler_fast.dampening():
                         scheduler_fast.step()
                     with warmup_scheduler_extremefast.dampening():
                         scheduler_extremefast.step()
-
-            print('Epoch [%d/%d],  Loss: %.4f, Train_Acc: %.4f,  '
-                  % (
-                      epoch + 1, custom_num_epochs, np.mean(cost_vector), np.mean(acc_vector)))
-            print("Training epoch completed")
+            print('Epoch [%d/%d], Loss: %.4f, Train_Acc: %.4f' %
+                  (epoch + 1, args.epochs, loss_total / sample_total, correct_total / sample_total))
 
         with torch.no_grad():
-            total = len(validate_dataset)
-            progbar = Progbar(total, width=10, stateful_metrics=stateful_metrics)
             model.eval()
-            print("Starting validation")
-            validate_acc_list, validate_real_items, validate_fake_items, val_loss, single_items = evaluate(validate_loader, model, criterion, progbar=progbar, setting=setting, output_directory=create_epoch_directory(run_directory, epoch + 1))
-
+            progbar = Progbar(len(validate_dataset), width=10)
+            metrics = evaluate(validate_loader, model, criterion, progbar=progbar,
+                               setting=validation_setting,
+                               output_directory=create_epoch_directory(run_directory, epoch + 1))
+            validate_acc_list, real_items, fake_items, _, single_items = metrics
             validate_acc = max(validate_acc_list)
-            print("validate_acc_list:",validate_acc_list)
             val_thresh = validate_acc_list.index(validate_acc)
-
-            validate_real_precision, validate_real_recall, validate_real_accuracy, validate_real_F1 = validate_real_items
-            validate_fake_precision, validate_fake_recall, validate_fake_accuracy, validate_fake_F1 = validate_fake_items
-            is_correct, t_correct, ip_correct, mm_correct = single_items
-            is_acc, t_acc, ip_acc, mm_acc = is_correct[val_thresh], t_correct[val_thresh], ip_correct[val_thresh], mm_correct[val_thresh]
+            val_threshold = _validation_thresholds(validation_setting['thresh'])[val_thresh]
             if validate_acc > best_acc_so_far:
-                best_acc_so_far = validate_acc
-                best_epoch_record = epoch+1
+                best_acc_so_far, best_epoch_record = validate_acc, epoch + 1
+            print('Epoch [%d/%d], validation accuracy: %.4f at threshold %.3f (best %.4f at epoch %d)' %
+                  (epoch + 1, args.epochs if training else 1, validate_acc, val_threshold,
+                   best_acc_so_far, best_epoch_record))
+            print('Branch accuracies: IS {}, T {}, IP {}, MM {}'.format(
+                *(values[val_thresh] for values in single_items)))
+            for name, items in (('Real News', real_items), ('Fake News', fake_items)):
+                print('------' + name + '-----------')
+                for field, values in zip(('Precision', 'Recall', 'Accuracy', 'F1'), items):
+                    print('{}: {}'.format(field, values))
+            checkpoint_directory = run_directory / 'checkpoints'
+            checkpoint_directory.mkdir(exist_ok=True)
+            checkpoint = checkpoint_directory / f'epoch_{epoch + 1:03d}.pkl'
+            torch.save(model.state_dict(), checkpoint)
+            print('Model saved at {}'.format(checkpoint))
 
-            print('Epoch [%d/%d],  validation accuracy: %.4f at threshold index %d (best %.4f at epoch %d)'
-                  % (
-                      epoch + 1, custom_num_epochs, validate_acc, val_thresh, best_acc_so_far, best_epoch_record,
-                  ))
-            print(f'Branch accuracies: IS {is_acc}, T {t_acc}, IP {ip_acc}, MM {mm_acc}')
-            print("------Real News -----------")
-            print("Precision: {}".format(validate_real_precision))
-            print("Recall: {}".format(validate_real_recall))
-            print("Accuracy: {}".format(validate_real_accuracy))
-            print("F1: {}".format(validate_real_F1))
-            print("------Fake News -----------")
-            print("Precision: {}".format(validate_fake_precision))
-            print("Recall: {}".format(validate_fake_recall))
-            print("Accuracy: {}".format(validate_fake_accuracy))
-            print("F1: {}".format(validate_fake_F1))
-            print("---------------------------")
-            print("Validation completed")
-            if True:
-                best_validate_acc = validate_acc
-                os.makedirs(run_directory / 'checkpoints', exist_ok=True)
-                best_validate_dir = run_directory / 'checkpoints' / f'epoch_{epoch + 1:03d}.pkl'
-                torch.save(model.state_dict(), best_validate_dir)
-                print("Model saved at {}".format(best_validate_dir))
 
-from collections import OrderedDict
 def load_model(model, load_path, strict=True):
-    load_net = torch.load(_read_path(load_path))
+    load_net = torch.load(_read_path(load_path), map_location='cpu')
     return model.load_state_dict(load_net, strict=strict)
 
 
-def evaluate(validate_loader, model, criterion, progbar=None, setting={}, *, output_directory):
+def _excel_text_preview(text):
+    """Make an Excel-safe preview while the JSONL export retains the original."""
+    preview = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]',
+                     lambda match: '\\u{:04x}'.format(ord(match.group())), text)
+    encoded = preview.encode('utf-16-le')
+    truncated = len(encoded) > 32767 * 2
+    if truncated:
+        suffix = '… [truncated; full text in predictions.jsonl]'
+        preview = encoded[:(32767 - len(suffix)) * 2].decode('utf-16-le', errors='ignore') + suffix
+    return preview, truncated
+
+
+def _validation_thresholds(threshold):
+    return [threshold + i / 1000 for i in range(-50, 50)]
+
+
+def evaluate(validate_loader, model, criterion, progbar=None, setting=None, *, output_directory):
+    """Return binary threshold metrics, sample-mean loss and aligned exports."""
     model.eval()
-    validate_acc_vector_temp, validate_precision_vector_temp, validate_recall_vector_temp, validate_F1_vector_temp  = [], [], [], []
-    val_loss = 0
-    threshold = setting['thresh']
-    THRESH = [threshold+i/1000 for i in range(-50,50)]
+    reference = next(model.parameters(), None)
+    if reference is None:
+        reference = next(model.buffers(), None)
+    device = reference.device if reference is not None else torch.device('cpu')
+    reduction = getattr(criterion, 'reduction', 'mean')
+    if reduction not in ('mean', 'sum'):
+        raise ValueError('Evaluation requires a scalar mean- or sum-reduced loss')
+    threshold = (setting or {}).get('thresh', 0.5)
+    thresholds = _validation_thresholds(threshold)
+    true_positive = np.zeros((2, len(thresholds)), dtype=np.int64)
+    false_positive = np.zeros_like(true_positive)
+    false_negative = np.zeros_like(true_positive)
+    branch_correct = np.zeros((4, len(thresholds)), dtype=np.int64)
+    class_counts = np.zeros(2, dtype=np.int64)
+    feature_batches = [[] for _ in range(5)]
+    label_batches, results = [], []
+    loss_total, sample_count = 0, 0
 
-    print(f"thresh: {THRESH}")
-    realnews_TP, realnews_TN, realnews_FP, realnews_FN = [0]*len(THRESH), [0]*len(THRESH), [0]*len(THRESH), [0]*len(THRESH)
-    fakenews_TP, fakenews_TN, fakenews_FP, fakenews_FN = [0]*len(THRESH), [0]*len(THRESH), [0]*len(THRESH), [0]*len(THRESH)
-    realnews_sum, fakenews_sum = [0]*len(THRESH), [0]*len(THRESH)
-    is_correct, mm_correct, t_correct, ip_correct = [0]*len(THRESH), [0]*len(THRESH), [0]*len(THRESH),  [0]*len(THRESH)
-    y_pred_full, y_GT_full = None, None
-    y_pred_fake_full, y_GT_fake_full, y_pred_real_full, y_GT_real_full = None, None, None, None
-    image_no,results = 0,[]
-    dataset_name = setting['val_dataname']
-
-    export_mix_features = torch.zeros(1,64).cuda()
-    export_is_features = torch.zeros(1,64).cuda()
-    export_t_features = torch.zeros(1,64).cuda()
-    export_ip_features = torch.zeros(1,64).cuda()
-    export_mm_features = torch.zeros(1,64).cuda()
-    all_labels = torch.zeros(1,1).cuda()
-    for i, items in enumerate(validate_loader):
-        
-        
-        texts, others, GT_path, _, _ = items
-        input_ids, attention_mask, token_type_ids = texts
-        image, image_aug, labels, category, sents = others
-        input_ids, attention_mask, token_type_ids, image, image_aug, labels, category = \
-                to_var(input_ids),to_var(attention_mask), to_var(token_type_ids), \
-            to_var(image), to_var(image_aug), to_var(labels), to_var(category)
-        mix_output, is_output, t_output, ip_output, mm_aux_output, _ , features = model(input_ids=input_ids,
-                                                                        attention_mask=attention_mask,
-                                                                        token_type_ids=token_type_ids,
-                                                                        image=image,
-                                                                        image_aug=image_aug,
-                                                                        no_ambiguity=True,
-                                                                        category=category,
-                                                                       return_features=True)
-        mix_feature, is_feature, t_feature, ip_feature, mm_aux_feature = features
-        export_mix_features = torch.cat([export_mix_features,mix_feature],0)
-        export_is_features = torch.cat([export_is_features,is_feature],0)
-        export_t_features = torch.cat([export_t_features,t_feature],0)
-        export_ip_features = torch.cat([export_ip_features,ip_feature],0)
-        export_mm_features = torch.cat([export_mm_features,mm_aux_feature],0)
-        if setting['is_use_bce']:
+    for texts, (image, labels, sentences), _ in validate_loader:
+        input_ids, attention_mask, token_type_ids = (
+            to_var(value, device=device) for value in texts)
+        image, labels = to_var(image, device=device), to_var(labels, device=device)
+        with torch.no_grad():
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask,
+                            token_type_ids=token_type_ids, image=image, return_features=True)
+            logits, features = outputs[:5], outputs[-1]
+            batch_size = image.shape[0]
+            if any(tuple(output.shape) != (batch_size, 1) for output in logits):
+                raise ValueError('Evaluation expects each binary logit output to have shape [batch, 1]')
+            if len(features) != 5 or any(tuple(feature.shape) != (batch_size, 64) for feature in features):
+                raise ValueError('Evaluation expects five feature tensors of shape [batch, 64]')
             labels = labels.float().unsqueeze(1)
-        all_labels = torch.cat([all_labels,labels],0)
-        val_loss = criterion(mix_output, labels)
-        val_is_loss = criterion(is_output, labels)
-        val_t_loss = criterion(t_output, labels)
-        val_ip_loss = criterion(ip_output, labels)
-        if progbar is not None:
-            logs = []
-            logs.append(('Mix_loss', val_loss.item()))
-            logs.append(('IS_loss', val_is_loss.item()))
-            logs.append(('T_loss', val_t_loss.item()))
-            logs.append(('IP_loss', val_ip_loss.item()))
-            progbar.add(len(image), values=logs) 
+            loss = criterion(logits[0], labels)
+            loss_total = loss_total + loss.detach() * (batch_size if reduction == 'mean' else 1)
+            sample_count += batch_size
+            if progbar is not None:
+                logs = [('Mix_loss', loss.item())] + [
+                    (name, criterion(output, labels).item()) for name, output in
+                    zip(('IS_loss', 'T_loss', 'IP_loss'), logits[1:4])]
+                progbar.add(batch_size, values=logs)
+            # Move each batch once; retain neither full GPU exports nor computation graphs.
+            probabilities = [torch.sigmoid(output).cpu() for output in logits]
+            cpu_features = [feature.detach().to(
+                device='cpu', dtype=torch.promote_types(feature.dtype, torch.float32), copy=True).numpy()
+                for feature in features]
+            cpu_labels = labels.cpu().numpy()
+        targets = cpu_labels.astype(np.int32).reshape(-1)
+        label_batches.append(cpu_labels)
+        for batches, values in zip(feature_batches, cpu_features):
+            batches.append(values)
 
-        mix_output, is_output, t_output, ip_output, mm_aux_output = torch.sigmoid(mix_output), torch.sigmoid(
-            is_output), torch.sigmoid(t_output), torch.sigmoid(ip_output), torch.sigmoid(mm_aux_output)
-        for thresh_idx, thresh in enumerate(THRESH):
-            validate_argmax = torch.where(mix_output<thresh,0,1)
-            validate_mm_argmax = torch.where(mm_aux_output < 0.5, 0, 1)
-            validate_is_argmax = torch.where(is_output < thresh, 0, 1)
-            validate_t_argmax = torch.where(t_output < thresh, 0, 1)
-            validate_ip_argmax = torch.where(ip_output < thresh, 0, 1)
-            y_pred = validate_argmax.squeeze().cpu().numpy()
-            y_pred_is = validate_is_argmax.squeeze().cpu().numpy()
-            y_pred_mm = validate_mm_argmax.squeeze().cpu().numpy()
-            y_pred_t = validate_t_argmax.squeeze().cpu().numpy()
-            y_pred_ip = validate_ip_argmax.squeeze().cpu().numpy()
-            y_GT = labels.int().cpu().numpy()
-            try:
-                if y_pred.shape[0] == 0:
-                    continue
-            except (IndexError):
-                continue
-            for idx, _ in enumerate(y_pred):
-                if thresh_idx==0:
-                    record = {}
-                    record['final_feature'] = mix_feature[idx].cpu().numpy().tolist()
-                    record['is_feature'] = is_feature[idx].cpu().numpy().tolist()
-                    record['t_feature'] = t_feature[idx].cpu().numpy().tolist()
-                    record['t_feature'] = t_feature[idx].cpu().numpy().tolist()
-                    record['ip_feature'] = ip_feature[idx].cpu().numpy().tolist()
-                    record['mm_feature'] = mm_aux_feature[idx].cpu().numpy().tolist()
+        decisions = []
+        for index, probability in enumerate(probabilities):
+            limits = probability.new_tensor([0.5] if index == 4 else thresholds)
+            # Equality is classified as positive; thresholds use the probability dtype.
+            decisions.append((~(probability < limits)).numpy())
+        prediction = decisions[0]
+        for target in (0, 1):
+            actual = targets[:, None] == target
+            selected = prediction == bool(target)
+            true_positive[target] += (selected & actual).sum(axis=0)
+            false_positive[target] += (selected & ~actual).sum(axis=0)
+            false_negative[target] += (~selected & actual).sum(axis=0)
+            class_counts[target] += int(actual.sum())
+        for branch, decision in enumerate(decisions[1:]):
+            branch_correct[branch] += (decision == targets[:, None]).sum(axis=0)
 
-                    record['image_no'], record['text'] = image_no, sents[idx]
-                    record['y_GT'], record['y_pred'] = y_GT[idx], mix_output[idx].item()
-                    record['y_pred_mm'], record['y_pred_is'], record['y_pred_t'], record['y_pred_ip'] = mm_aux_output[idx].item(), \
-                                                                                                             is_output[idx].item(), \
-                                                                                                             t_output[idx].item(), \
-                                                                                                             ip_output[idx].item()
-                    results.append(record)
+        probability_values = [probability[:, 0].tolist() for probability in probabilities]
+        for index, sentence in enumerate(sentences):
+            record = {name: values[index].tolist() for name, values in zip(
+                ('final_feature', 'is_feature', 't_feature', 'ip_feature', 'mm_feature'), cpu_features)}
+            record.update(image_no=len(results), text=sentence, y_GT=int(targets[index]),
+                          y_pred=probability_values[0][index], y_pred_is=probability_values[1][index],
+                          y_pred_t=probability_values[2][index], y_pred_ip=probability_values[3][index],
+                          y_pred_mm=probability_values[4][index])
+            results.append(record)
 
-
-                if y_pred_is[idx]==y_GT[idx]: is_correct[thresh_idx] += 1
-                if y_pred_mm[idx] == y_GT[idx]: mm_correct[thresh_idx] += 1
-                if y_pred_t[idx] == y_GT[idx]: t_correct[thresh_idx] += 1
-                if y_pred_ip[idx] == y_GT[idx]: ip_correct[thresh_idx] += 1
-
-                if y_GT[idx]==1:
-                    fakenews_sum[thresh_idx] +=1
-                    if y_pred[idx]==0:
-                        fakenews_FN[thresh_idx] += 1
-                        realnews_FP[thresh_idx] += 1
-                    else:
-                        fakenews_TP[thresh_idx] += 1
-                        realnews_TN[thresh_idx] += 1
-                else:
-                    realnews_sum[thresh_idx] +=1
-                    if y_pred[idx]==1:
-                        realnews_FN[thresh_idx] +=1
-                        fakenews_FP[thresh_idx] +=1
-                    else:
-                        realnews_TP[thresh_idx] += 1
-                        fakenews_TN[thresh_idx] += 1
-    print(realnews_sum,fakenews_sum,fakenews_FP,realnews_FN,realnews_TP,fakenews_TN)
-    export_mix_features = export_mix_features[1:,:]
-    export_is_features = export_is_features[1:,:]
-    export_t_features = export_t_features[1:,:]
-    export_ip_features = export_ip_features[1:,:]
-    export_mm_features = export_mm_features[1:,:]
-    all_labels = all_labels[1:,:]
-
-    export_mix_features = torch.cat([all_labels ,export_mix_features],1)
-    export_is_features = torch.cat([all_labels ,export_is_features],1)
-    export_t_features = torch.cat([all_labels ,export_t_features],1)
-    export_ip_features = torch.cat([all_labels ,export_ip_features],1)
-    export_mm_features = torch.cat([all_labels ,export_mm_features],1)
-
-    export_mix_features = export_mix_features.cpu()
-    export_is_features = export_is_features.cpu()
-    export_t_features = export_t_features.cpu()
-    export_ip_features = export_ip_features.cpu()
-    export_mm_features = export_mm_features.cpu()
-    mix_feature_array = np.array(export_mix_features)
-    is_feature_array = np.array(export_is_features)
-    t_feature_array = np.array(export_t_features)
-    ip_feature_array = np.array(export_ip_features)
-    mm_feature_array = np.array(export_mm_features)
-    np.savetxt(Path(output_directory) / 'mix_features.txt',mix_feature_array)
-    np.savetxt(Path(output_directory) / 'is_features.txt',is_feature_array)
-    np.savetxt(Path(output_directory) / 't_features.txt',t_feature_array)
-    np.savetxt(Path(output_directory) / 'ip_features.txt',ip_feature_array)
-    np.savetxt(Path(output_directory) / 'mm_aux_features.txt',mm_feature_array)
-
-
+    if sample_count == 0:
+        raise ValueError('Cannot evaluate an empty validation loader')
+    labels = np.concatenate(label_batches, axis=0)
+    for name, batches in zip(('mix_features.txt', 'is_features.txt', 't_features.txt',
+                              'ip_features.txt', 'mm_aux_features.txt'), feature_batches):
+        values = np.concatenate((labels, np.concatenate(batches, axis=0)), axis=1)
+        np.savetxt(Path(output_directory) / name, values)
+    with (Path(output_directory) / 'predictions.jsonl').open('w', encoding='utf-8') as handle:
+        for record in results:
+            handle.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + '\n')
     import pandas as pd
-    df = pd.DataFrame(results)
-    pandas_file = Path(output_directory) / 'predictions.xlsx'
-    df.to_excel(pandas_file)
-    print(f"Excel saved to {pandas_file}")
-
-    val_accuracy, real_accuracy, fake_accuracy, real_precision, fake_precision = [0]*len(THRESH),[0]*len(THRESH),[0]*len(THRESH),[0]*len(THRESH),[0]*len(THRESH)
-    real_recall, fake_recall, real_F1, fake_F1 = [0]*len(THRESH),[0]*len(THRESH),[0]*len(THRESH),[0]*len(THRESH)
-    
-    for thresh_idx, _ in enumerate(THRESH):
-        try:
-            mm_correct[thresh_idx] = mm_correct[thresh_idx] / (realnews_sum[thresh_idx] + fakenews_sum[thresh_idx])
-            is_correct[thresh_idx] = is_correct[thresh_idx]/(realnews_sum[thresh_idx]+fakenews_sum[thresh_idx])
-            t_correct[thresh_idx] = t_correct[thresh_idx] / (realnews_sum[thresh_idx] + fakenews_sum[thresh_idx])
-            ip_correct[thresh_idx] = ip_correct[thresh_idx] / (realnews_sum[thresh_idx] + fakenews_sum[thresh_idx])
-
-            val_accuracy[thresh_idx] = (realnews_TP[thresh_idx]+realnews_TN[thresh_idx])/(realnews_TP[thresh_idx]+realnews_TN[thresh_idx]+realnews_FP[thresh_idx]+realnews_FN[thresh_idx])
-            real_accuracy[thresh_idx] = (realnews_TP[thresh_idx])/realnews_sum[thresh_idx]
-            fake_accuracy[thresh_idx] = (fakenews_TP[thresh_idx])/fakenews_sum[thresh_idx]
-            real_precision[thresh_idx] = realnews_TP[thresh_idx]/max(1,(realnews_TP[thresh_idx]+realnews_FP[thresh_idx]))
-            fake_precision[thresh_idx] = fakenews_TP[thresh_idx] / max(1,(fakenews_TP[thresh_idx] + fakenews_FP[thresh_idx]))
-            real_recall[thresh_idx] = realnews_TP[thresh_idx]/max(1,(realnews_TP[thresh_idx]+realnews_FN[thresh_idx]))
-            fake_recall[thresh_idx] = fakenews_TP[thresh_idx] / max(1,(fakenews_TP[thresh_idx] + fakenews_FN[thresh_idx]))
-            real_F1[thresh_idx] = 2*(real_recall[thresh_idx]*real_precision[thresh_idx])/max(1,(real_recall[thresh_idx]+real_precision[thresh_idx]))
-            fake_F1[thresh_idx] = 2 * (fake_recall[thresh_idx] * fake_precision[thresh_idx]) / max(1,(fake_recall[thresh_idx] + fake_precision[thresh_idx]))
-        except ZeroDivisionError:
-            continue
-    return val_accuracy, (real_precision, real_recall, real_accuracy, real_F1),\
-           (fake_precision, fake_recall, fake_accuracy, fake_F1), \
-           val_loss,\
-           (is_correct,t_correct,ip_correct,mm_correct)
-
-
+    columns = ['final_feature', 'is_feature', 't_feature', 'ip_feature', 'mm_feature',
+               'image_no', 'text', 'y_GT', 'y_pred', 'y_pred_mm', 'y_pred_is', 'y_pred_t', 'y_pred_ip']
+    frame = pd.DataFrame(results, columns=columns)
+    previews, truncated = zip(*(_excel_text_preview(record['text']) for record in results))
+    frame['text'] = previews
+    frame.rename(columns={'text': 'text_preview'}, inplace=True)
+    frame['text_truncated'] = truncated
+    with pd.ExcelWriter(Path(output_directory) / 'predictions.xlsx', engine='openpyxl') as writer:
+        frame.to_excel(writer)
+        # News text is literal content, including strings beginning with '='.
+        column = frame.columns.get_loc('text_preview') + 2  # Include the export index.
+        for row in writer.sheets['Sheet1'].iter_rows(min_row=2, min_col=column, max_col=column):
+            row[0].data_type = 's'
+    metrics = []
+    for target in (0, 1):
+        tp, fp, fn = true_positive[target], false_positive[target], false_negative[target]
+        precision = tp / np.maximum(1, tp + fp)
+        recall = tp / max(1, class_counts[target])
+        f1 = 2 * tp / np.maximum(1, 2 * tp + fp + fn)
+        metrics.append((precision.tolist(), recall.tolist(), recall.tolist(), f1.tolist()))
+    accuracy = (true_positive.sum(axis=0) / sample_count).tolist()
+    return (accuracy, metrics[0], metrics[1], loss_total / sample_count,
+            tuple(values.tolist() for values in branch_correct / sample_count))
 
 
 if __name__ == '__main__':

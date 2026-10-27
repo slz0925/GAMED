@@ -32,7 +32,6 @@ data/, utils/                 Dataset/image loading and progress reporting
 resource_paths.py, config/    Resource configuration
 scripts/                      Launcher and experiment commands
 docs/, resources/             Method, environment, data and checkpoint metadata
-tests/, tools/                Regression tests and publication checks
 third_party/licenses/         Component licence texts
 checkpoint/                   Initialisation weights and default run outputs
 outputs/                      Optional run output root; payloads excluded from Git
@@ -42,15 +41,14 @@ outputs/                      Optional run output root; payloads excluded from G
 
 Training and validation target Linux with CUDA and `fork` DataLoader workers;
 Windows and `spawn`/`forkserver` workers are not supported by the current entry.
-Install the recorded dependency constraints in an
-isolated environment, using a PyTorch build suitable for the GPU and driver:
+Install the dependencies in an isolated environment, using a PyTorch build
+suitable for the GPU and driver:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-[ENVIRONMENT.md](docs/ENVIRONMENT.md) distinguishes the recorded training packages
-from the Python versions verified for source tests.
+See [ENVIRONMENT.md](docs/ENVIRONMENT.md) for platform and dependency requirements.
 
 ## Data and checkpoints
 
@@ -93,22 +91,12 @@ python run_gamed.py --help
 ```
 
 The entry sets the repository as the working directory. Launcher options
-`--config` and `--dry-run` precede `run_gamed.py`. Validation uses both data loaders,
+`--config` and `--dry-run` precede `run_gamed.py`. Validation loads only the selected validation data,
 exports features/results and saves a state dict; see
 [REPRODUCE.md](docs/REPRODUCE.md) for parameters, metrics and output locations.
 `-output_file` controls all outputs. Each invocation creates an independent run
-directory containing per-epoch checkpoints, feature files and `predictions.xlsx`.
-
-## Tests
-
-```bash
-python -B -m unittest discover -s tests -v
-python -B tools/check_release.py
-```
-
-The tests cover computation contracts, command dispatch, image I/O and resource
-routing. Model/weight numerical comparisons require the training environment;
-details are in [REPRODUCE.md](docs/REPRODUCE.md).
+directory containing per-epoch checkpoints, feature files, `predictions.xlsx`
+with text previews and `predictions.jsonl` with complete text and predictions.
 
 ## Citation
 

@@ -1,26 +1,12 @@
-"""Optional filesystem routing. No model, dataset, or metric policy lives here.
-
-With no configuration or overrides, every input is returned unchanged.
-Read routing never extracts, copies, downloads, or writes an original resource.
-"""
+"""Optional filesystem routing for datasets, checkpoints and encoder resources."""
 import json
 import os
 from functools import lru_cache
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-_ROOT_PREFIXES = (
-    '/root/autodl-tmp/ssd/yyh/tmp/fnd-bootstrap-master',
-    '/ssd/yyh/tmp/fnd-bootstrap-master',
-    '/data/yyh/tmp/fnd-bootstrap-master',
-)
-_GAMED_ENV_KEYS = {
-    'resource_root': 'GAMED_RESOURCE_ROOT', 'groupshare_root': 'GAMED_GROUPSHARE_ROOT',
-    'bert_root': 'GAMED_BERT_ROOT', 'cache_root': 'GAMED_CACHE_ROOT',
-    'output_root': 'GAMED_OUTPUT_ROOT',
-}
-# Accept existing configurations; GAMED names take precedence.
-_ENV_KEYS = {key: name.replace('GAMED_', 'FND_', 1) for key, name in _GAMED_ENV_KEYS.items()}
+_GAMED_ENV_KEYS = {'resource_root': 'GAMED_RESOURCE_ROOT'}
+_ENV_KEYS = {'resource_root': 'FND_RESOURCE_ROOT'}
 ENGLISH_ENCODER_PATH = 'ernie/models--nghuyong--ernie-2.0-base-en'
 
 
@@ -63,7 +49,7 @@ def _suffix(path, prefix):
     prefix = prefix.replace('\\', '/').rstrip('/')
     if not prefix:
         raise ValueError('Path prefixes must not be empty.')
-    # Windows paths are case-insensitive; Linux legacy paths stay case-sensitive.
+    # Windows prefixes are case-insensitive; Unix prefixes stay case-sensitive.
     is_windows = len(prefix)>1 and prefix[1]==':'
     lhs, rhs = (path.casefold(), prefix.casefold()) if is_windows else (path, prefix)
     if lhs == rhs:
@@ -98,81 +84,20 @@ def resolve_read_path(value):
             if mapped is not None:
                 return mapped
     if cfg.get('resource_root'):
-        for prefix in _ROOT_PREFIXES:
-            mapped = _mapped(path, prefix, cfg['resource_root'])
-            if mapped is not None:
-                return mapped
         local = _suffix(path, PROJECT_ROOT.as_posix())
         relative = local if local is not None else path
         while relative.startswith('./'):
             relative = relative[2:]
         if relative.split('/')[0] in ('dataset', 'checkpoint', 'ernie'):
-            # An existing local checkpoint takes precedence over external resources.
+            # Existing local resource files take precedence over the external root.
             candidate=PROJECT_ROOT.joinpath(*[p for p in relative.split('/') if p not in ('', '.')])
             if candidate.is_file():
                 return value
             return str(_root(cfg['resource_root']).joinpath(*[p for p in relative.split('/') if p not in ('', '.')]))
-    for key, prefixes in (
-        ('groupshare_root', ('/home/groupshare', '/groupshare')),
-        ('bert_root', ('/ssd/yyh/model',)),
-    ):
-        if cfg.get(key):
-            for prefix in prefixes:
-                mapped = _mapped(path, prefix, cfg[key])
-                if mapped is not None:
-                    return mapped
-    filename=path[2:] if path.startswith('./') else path
-    if cfg.get('cache_root') and '/' not in filename:
-        if filename.endswith(('.pickle', '.npz')):
-            return str(_root(cfg['cache_root'])/filename)
     # Leave Hugging Face IDs, file-like objects and unrelated paths unchanged.
     return value
 
 
-def resolve_write_path(value):
-    """Route supported absolute result locations; leave other writes unchanged."""
-    if not isinstance(value, (str, os.PathLike)):
-        return value
-    cfg=settings()
-    if not cfg.get('output_root'):
-        return value
-    raw=os.fspath(value)
-    if not isinstance(raw,str):
-        return value
-    path=raw.replace('\\','/')
-    for prefix, subdir in (
-        ('/home/groupshare/mae-main/example', 'examples'),
-        ('/home/groupshare/CIKM_ying_output', 'checkpoints'),
-        ('/groupshare/CIKM_ying_output', 'checkpoints'),
-    ):
-        mapped=_mapped(path,prefix,_root(cfg['output_root'])/subdir)
-        if mapped is not None:
-            return mapped
-    return value
-
-
 def resolve_english_encoder_path():
-    """Locate the English model/tokenizer directory without creating resources.
-
-    Explicit prefix mappings precede resource_root, with legacy mappings first
-    when both legacy and repository-relative mappings match.
-    An existing legacy installation is a fallback when no local directory exists.
-    """
-    legacy = _ROOT_PREFIXES[0] + '/' + ENGLISH_ENCODER_PATH
-    prefixes = sorted(settings().get('prefix_map', {}).items(),
-                      key=lambda item: len(item[0]), reverse=True)
-    for path in (legacy, ENGLISH_ENCODER_PATH):
-        for prefix, destination in prefixes:
-            if destination:
-                mapped = _mapped(path, prefix, destination)
-                if mapped is not None:
-                    return mapped
-    mapped = resolve_read_path(legacy)
-    if mapped != legacy:
-        return mapped
-    mapped = resolve_read_path(ENGLISH_ENCODER_PATH)
-    if mapped != ENGLISH_ENCODER_PATH:
-        return mapped
-    if not (PROJECT_ROOT / ENGLISH_ENCODER_PATH).is_dir() and Path(legacy).is_dir():
-        return legacy
-    return ENGLISH_ENCODER_PATH
+    """Locate the model and tokenizer through the shared resource configuration."""
+    return resolve_read_path(ENGLISH_ENCODER_PATH)
